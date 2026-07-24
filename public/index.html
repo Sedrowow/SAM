@@ -165,9 +165,17 @@
                 Limit
                 <input id="rawDbLimit" type="number" min="1" max="1000" value="100" />
               </label>
+              <label>
+                View
+                <select id="rawDbMode">
+                  <option value="compact">Compact table</option>
+                  <option value="json">Raw JSON</option>
+                </select>
+              </label>
               <button id="rawDbRefreshBtn" class="btn">Load Rows</button>
             </div>
             <div id="rawDbMeta" class="status-text"></div>
+            <div id="rawDbCompactWrap" class="raw-table-wrap"></div>
             <pre id="rawDbOutput" class="raw-json-viewer"></pre>
           </div>
         </div>

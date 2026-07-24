@@ -41,6 +41,80 @@ function extractReasoningText(value) {
   ).trim();
 }
 
+function extractFinalAnswerText(value) {
+  if (!value) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  const contentCandidates = [
+    value?.message?.content,
+    value?.result?.message?.content,
+    value?.data?.message?.content,
+    value?.choices?.[0]?.message?.content,
+    value?.result?.choices?.[0]?.message?.content,
+    value?.output_text,
+    value?.result?.output_text,
+    value?.text
+  ];
+
+  for (const candidate of contentCandidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+
+    if (Array.isArray(candidate)) {
+      const joined = candidate
+        .map((part) => {
+          if (typeof part === "string") {
+            return part;
+          }
+          if (typeof part?.text === "string") {
+            return part.text;
+          }
+          if (typeof part?.content === "string") {
+            return part.content;
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+
+      if (joined) {
+        return joined;
+      }
+    }
+  }
+
+  return "";
+}
+
+function looksLikePromptOrDeliberation(text) {
+  const sample = String(text || "").trim();
+  if (!sample) {
+    return false;
+  }
+
+  return /\b(input|role|task|rules?|server rules|json schema|output\s*:|violation history|recent messages)\b\s*[:#]/i.test(sample) ||
+    /\b(i(?:'| a)m going to|i(?:'| a)m thinking|let me think|step by step|chain of thought)\b/i.test(sample);
+}
+
+function cleanDisplayText(text, maxLen = 600) {
+  const cleaned = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) {
+    return "";
+  }
+
+  return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen - 3)}...` : cleaned;
+}
+
 function inferDecisionFromReasoning(reasoningText) {
   const text = String(reasoningText || "").trim();
   if (!text) {
@@ -120,12 +194,12 @@ function decisionPayloadToText(value) {
     return String(value || "");
   }
 
-  const reasoning = extractReasoningText(value);
-  const json = JSON.stringify(value);
-  if (reasoning) {
-    return `${json}\n\nreasoning:\n${reasoning}`;
+  const finalAnswerText = extractFinalAnswerText(value);
+  if (finalAnswerText) {
+    return finalAnswerText;
   }
-  return json;
+
+  return JSON.stringify(value);
 }
 
 function pickActionWithinPolicy(action, allowedActions, maxAutoAction, allowedByCap) {
@@ -161,10 +235,13 @@ function buildSystemPrompt(rules) {
   return [
     "You are a strict but fair Stoat moderation assistant.",
     "Return JSON only. No markdown. No prose outside JSON.",
+    "Do not reveal hidden chain-of-thought or internal reasoning.",
     "Evaluate whether the message violates the rules and propose an action.",
     "Take context and prior violations into account.",
     "You must flag direct threats and self-harm encouragement (e.g. 'kys', 'kill yourself').",
     "Always provide both a short summary and a rationale, even when not flagged.",
+    "summary must describe the user message and context pattern only; never mention prompt/system/policy formatting.",
+    "rationale must explain why it is flagged or not flagged, and why recommendedAction is chosen. Mention what escalate would imply.",
     "JSON schema:",
     "{",
     '  "flagged": boolean,',
@@ -261,14 +338,25 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
     return parsed;
   }
 
-  const inferredFromParsed = inferDecisionFromReasoning(extractReasoningText(parsed));
-  if (inferredFromParsed) {
-    return inferredFromParsed;
-  }
+  const finalAnswerText = extractFinalAnswerText(rawText);
+  if (finalAnswerText) {
+    try {
+      const parsedFromContent = parseModelJson(finalAnswerText);
+      if (hasDecisionShape(parsedFromContent)) {
+        return parsedFromContent;
+      }
+    } catch {
+      // Fall through to repair.
+    }
 
-  const inferredFromRaw = inferDecisionFromReasoning(extractReasoningText(rawText));
-  if (inferredFromRaw) {
-    return inferredFromRaw;
+    const inferredFromFinalAnswer = inferDecisionFromReasoning(finalAnswerText);
+    if (inferredFromFinalAnswer) {
+      return {
+        ...inferredFromFinalAnswer,
+        summary: "",
+        rationale: ""
+      };
+    }
   }
 
   {
@@ -327,9 +415,13 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
       return repaired;
     }
 
-    const inferredFromRepair = inferDecisionFromReasoning(extractReasoningText(repairedText));
+    const inferredFromRepair = inferDecisionFromReasoning(decisionPayloadToText(repairedText));
     if (inferredFromRepair) {
-      return inferredFromRepair;
+      return {
+        ...inferredFromRepair,
+        summary: "",
+        rationale: ""
+      };
     }
 
     throw new Error("AI repair response did not contain a moderation decision shape.");
@@ -386,17 +478,71 @@ function summarizeWithContext(message, recentMessages) {
   }
 
   const excerpt = text.length > 120 ? `${text.slice(0, 117)}...` : text;
-  const recentCount = Array.isArray(recentMessages) ? recentMessages.length : 0;
-  return recentCount > 0
-    ? `Message says: "${excerpt}". Context includes ${recentCount} recent message(s).`
-    : `Message says: "${excerpt}".`;
+  const recent = Array.isArray(recentMessages) ? recentMessages : [];
+  const recentTexts = recent
+    .map((row) => String(row?.content || "").trim())
+    .filter(Boolean);
+  const recentCount = recentTexts.length;
+  const repeated = recentTexts.some((line) => line.toLowerCase() === text.toLowerCase());
+
+  if (!recentCount) {
+    return `Message says: "${excerpt}".`;
+  }
+
+  if (repeated) {
+    return `Message says: "${excerpt}". Context shows repetition of this phrasing in recent messages.`;
+  }
+
+  const last = recentTexts[recentTexts.length - 1];
+  const lastExcerpt = last.length > 70 ? `${last.slice(0, 67)}...` : last;
+  return `Message says: "${excerpt}". Context from ${recentCount} recent message(s), latest was "${lastExcerpt}".`;
+}
+
+function escalateAction(action) {
+  const path = {
+    none: "warn",
+    warn: "delete",
+    delete: "timeout",
+    timeout: "kick",
+    kick: "ban",
+    ban: "ban"
+  };
+  return path[action] || "warn";
+}
+
+function rationaleTemplate({ flagged, reason, severity, recommendedAction, recentMessages }) {
+  const contextCount = Array.isArray(recentMessages) ? recentMessages.length : 0;
+  const escalate = escalateAction(recommendedAction);
+
+  if (!flagged) {
+    return `No clear policy violation was detected for this message in current context (${contextCount} recent message(s) reviewed). Approve keeps action at ${recommendedAction}. Escalate would move to ${escalate} only if moderators have additional evidence outside the captured context.`;
+  }
+
+  return `Flagged for ${reason} with ${severity} severity based on message content and recent context (${contextCount} recent message(s) reviewed). Approve applies ${recommendedAction}. Escalate would move to ${escalate} if moderators judge risk as more severe.`;
 }
 
 function applySafetyHeuristics({ message, recentMessages, normalized }) {
+  const safeSummary = cleanDisplayText(normalized.summary, 260);
+  const safeRationale = cleanDisplayText(normalized.rationale, 700);
+
+  const summary = safeSummary && !looksLikePromptOrDeliberation(safeSummary)
+    ? safeSummary
+    : summarizeWithContext(message, recentMessages);
+
+  const rationale = safeRationale && !looksLikePromptOrDeliberation(safeRationale)
+    ? safeRationale
+    : rationaleTemplate({
+      flagged: normalized.flagged,
+      reason: normalized.reason,
+      severity: normalized.severity,
+      recommendedAction: normalized.recommendedAction,
+      recentMessages
+    });
+
   return {
     ...normalized,
-    summary: normalized.summary || summarizeWithContext(message, recentMessages),
-    rationale: normalized.rationale || "Model provided no rationale."
+    summary,
+    rationale
   };
 }
 

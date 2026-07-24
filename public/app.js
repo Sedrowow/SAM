@@ -74,6 +74,46 @@ function escapeAttr(text) {
   return escapeHtml(text).replace(/"/g, "&quot;");
 }
 
+function compactCell(value, maxLen = 120) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const raw = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return raw.length > maxLen ? `${raw.slice(0, maxLen - 3)}...` : raw;
+}
+
+function renderRawDbCompactTable(result) {
+  const wrap = qs("rawDbCompactWrap");
+  const columns = Array.isArray(result?.columns) ? result.columns : [];
+  const rows = Array.isArray(result?.rows) ? result.rows : [];
+
+  if (!columns.length) {
+    wrap.innerHTML = "<div class=\"status-text\">No columns returned.</div>";
+    return;
+  }
+
+  const head = columns.map((col) => `<th>${escapeHtml(col)}</th>`).join("");
+  const body = rows.length
+    ? rows.map((row) => {
+      const tds = columns.map((col) => {
+        const full = row?.[col];
+        const short = compactCell(full);
+        const title = escapeAttr(typeof full === "object" ? JSON.stringify(full) : String(full ?? ""));
+        return `<td title="${title}">${escapeHtml(short)}</td>`;
+      }).join("");
+      return `<tr>${tds}</tr>`;
+    }).join("")
+    : `<tr><td colspan="${columns.length}">No rows returned.</td></tr>`;
+
+  wrap.innerHTML = `
+    <table class="raw-compact-table">
+      <thead><tr>${head}</tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
 async function loadStats() {
   const { stats, reasonCounts } = await api("/api/stats");
   const statsGrid = qs("statsGrid");
@@ -385,17 +425,30 @@ async function deleteMessagesFromDbForm() {
 async function loadRawDbViewer() {
   const table = qs("rawDbTable").value;
   const limit = Number(qs("rawDbLimit").value || 100);
+  const mode = qs("rawDbMode").value;
   const meta = qs("rawDbMeta");
   const output = qs("rawDbOutput");
+  const compactWrap = qs("rawDbCompactWrap");
 
   meta.textContent = "Loading...";
   try {
     const { result } = await api(`/api/db/raw?table=${encodeURIComponent(table)}&limit=${encodeURIComponent(String(limit))}`);
     meta.textContent = `Table: ${result.table} | Rows: ${result.rowCount} | Columns: ${result.columns.length}`;
-    output.textContent = JSON.stringify(result.rows, null, 2);
+
+    if (mode === "json") {
+      compactWrap.innerHTML = "";
+      output.style.display = "block";
+      output.textContent = JSON.stringify(result.rows, null, 2);
+    } else {
+      output.style.display = "none";
+      output.textContent = "";
+      renderRawDbCompactTable(result);
+    }
   } catch (error) {
     meta.textContent = `Raw view failed: ${error.message}`;
+    compactWrap.innerHTML = "";
     output.textContent = "";
+    output.style.display = mode === "json" ? "block" : "none";
   }
 }
 
@@ -404,6 +457,7 @@ qs("applyFiltersBtn").addEventListener("click", loadMessages);
 qs("saveSettingsBtn").addEventListener("click", saveSettings);
 qs("dbDeleteUserMessagesBtn").addEventListener("click", deleteMessagesFromDbForm);
 qs("rawDbRefreshBtn").addEventListener("click", loadRawDbViewer);
+qs("rawDbMode").addEventListener("change", loadRawDbViewer);
 
 setupTabs();
 

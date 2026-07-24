@@ -328,6 +328,40 @@ td code {
   white-space: pre;
 }
 
+.raw-table-wrap {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.raw-compact-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.76rem;
+}
+
+.raw-compact-table th,
+.raw-compact-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.raw-compact-table th {
+  position: sticky;
+  top: 0;
+  background: #fffdf8;
+  z-index: 1;
+}
+
 @media (max-width: 1100px) {
   .db-grid {
     grid-template-columns: 1fr;
