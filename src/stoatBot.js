@@ -223,7 +223,13 @@ function createStoatBot({ config, db, puter }) {
       action,
       reason: `${flag.reason} | ${flag.rationale || "AI flag"}`,
       timeoutMinutes: settings.timeoutMinutes,
-      by: moderatorUserId ? `Moderator ${moderatorUserId}` : "AI"
+      by: moderatorUserId ? `Moderator ${moderatorUserId}` : "AI",
+      notificationContext: {
+        flagId: flag.id,
+        reasonCategory: flag.reason,
+        recommendedAction: flag.recommended_action,
+        rationale: flag.rationale
+      }
     });
 
     db.recordUserAction(flag.guild_id, flag.user_id, action);
