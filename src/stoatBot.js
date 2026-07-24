@@ -34,6 +34,7 @@ function createFlagLogText({ flagId, message, decision, userStats, autoApplied, 
     `Confidence: ${Math.round(decision.confidence * 100)}%`,
     `Suggested action: ${decision.recommendedAction}`,
     `Suggested escalation: ${escalationFor(decision.recommendedAction)}`,
+    message.imageAttachmentCount ? `Attached images reviewed: ${message.imageAttachmentCount}` : null,
     `Prior violations: warn=${userStats.warns}, timeout=${userStats.timeouts}, kick=${userStats.kicks}, ban=${userStats.bans}`,
     "",
     "Summary:",
@@ -153,6 +154,89 @@ function compactText(text, maxLen = 500) {
   return normalized.length > maxLen ? `${normalized.slice(0, maxLen - 3)}...` : normalized;
 }
 
+function listAttachments(source) {
+  if (!source) {
+    return [];
+  }
+
+  if (Array.isArray(source)) {
+    return source;
+  }
+
+  if (typeof source.values === "function") {
+    return Array.from(source.values());
+  }
+
+  if (typeof source[Symbol.iterator] === "function") {
+    return Array.from(source);
+  }
+
+  if (typeof source === "object") {
+    return Object.values(source);
+  }
+
+  return [];
+}
+
+function isImageAttachment(attachment) {
+  const contentType = String(attachment?.contentType || attachment?.mimeType || "").toLowerCase();
+  const name = String(attachment?.filename || attachment?.name || "").toLowerCase();
+  return contentType.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|avif|tiff?)$/.test(name);
+}
+
+async function fetchImageAttachment(attachment, maxBytes = 4 * 1024 * 1024) {
+  const sourceUrl = attachment?.proxyURL || attachment?.proxyUrl || attachment?.url;
+  if (!sourceUrl) {
+    return null;
+  }
+
+  const response = await fetch(sourceUrl);
+  if (!response.ok) {
+    return null;
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength > maxBytes) {
+    return null;
+  }
+
+  const contentType = String(response.headers.get("content-type") || attachment?.contentType || "image/png");
+  const base64 = Buffer.from(arrayBuffer).toString("base64");
+  return {
+    filename: attachment?.filename || attachment?.name || null,
+    contentType,
+    source: sourceUrl,
+    base64,
+    dataUrl: `data:${contentType};base64,${base64}`
+  };
+}
+
+async function collectImageAttachments(message) {
+  const attachments = listAttachments(message?.attachments);
+  const imageAttachments = [];
+
+  for (const attachment of attachments) {
+    if (!isImageAttachment(attachment)) {
+      continue;
+    }
+
+    try {
+      const image = await fetchImageAttachment(attachment);
+      if (image) {
+        imageAttachments.push(image);
+      }
+    } catch (error) {
+      console.warn("Failed to fetch image attachment:", error.message || error);
+    }
+
+    if (imageAttachments.length >= 4) {
+      break;
+    }
+  }
+
+  return imageAttachments;
+}
+
 function parseFlagRationale(flagRationale) {
   const text = String(flagRationale || "");
   const summary = (text.match(/Summary:\s*([\s\S]*?)\nReasoning:/i)?.[1] || "").trim();
@@ -163,7 +247,7 @@ function parseFlagRationale(flagRationale) {
   };
 }
 
-function fallbackDmText({ action, reason }) {
+function fallbackDmText({ action, reason, attachmentCount = 0 }) {
   const actionText = {
     warn: "we sent you a warning",
     delete: "we removed one of your messages",
@@ -172,10 +256,11 @@ function fallbackDmText({ action, reason }) {
     ban: "your account was banned from the server"
   }[action] || "a moderation action was taken";
 
-  const reasonText = compactText(reason || "A message appears to have broken server rules.", 260);
+  const targetText = attachmentCount > 0 ? "the image you shared" : "your recent message";
+  const reasonText = compactText(reason || `Something in ${targetText} appears to have broken server rules.`, 260);
   return [
     "Hi, we wanted to let you know about a moderation action.",
-    `After reviewing your message, ${actionText}.`,
+    `After reviewing ${targetText}, ${actionText}.`,
     `Reason: ${reasonText}`,
     "If this seems wrong, please contact a server moderator and ask for a review."
   ].join("\n\n");
@@ -405,6 +490,7 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
     action,
     reasonCategory: flag.reason,
     severity: flag.severity,
+    attachmentCount: Number(flag.attachmentCount || 0),
     messageExcerpt: compactText(flag.content || "", 180),
     summary: details.summary,
     rationale: details.reasoning
@@ -418,6 +504,7 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
     "Do not mention moderators, admins, or AI systems.",
     "Do not mention policies in abstract terms; refer to behavior plainly.",
     "Keep it between 4 and 7 short sentences.",
+    "If attachmentCount is greater than zero, refer to the image or images they shared.",
     "If reasonCategory is self-harm, use a supportive and compassionate tone, encourage reaching out to trusted people or local emergency services if immediate danger exists, and avoid judgmental wording.",
     "Return only JSON in this schema: {\"dm\": string}."
   ].join("\n");
@@ -463,6 +550,7 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
           content: JSON.stringify({
             action,
             reasonCategory: flag.reason,
+            attachmentCount: Number(flag.attachmentCount || 0),
             messageExcerpt: compactText(flag.content || "", 180),
             draft: text || "",
             rules: [
@@ -494,7 +582,7 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
   }
 
   if (!text) {
-    return fallbackDmText({ action, reason: flag.reason });
+    return fallbackDmText({ action, reason: flag.reason, attachmentCount: flag.attachmentCount || 0 });
   }
 
   if (!isLikelyCompleteDm(text)) {
@@ -839,6 +927,9 @@ function createStoatBot({ config, db, puter }) {
       editedAt
     };
 
+    const imageAttachments = await collectImageAttachments(msg);
+    messagePayload.imageAttachmentCount = imageAttachments.length;
+
     try {
       db.insertRecentContext({
         guildId: messagePayload.guildId,
@@ -862,6 +953,7 @@ function createStoatBot({ config, db, puter }) {
         temperature: settings.puterTemperature,
         rules: settings.rules,
         message: messagePayload,
+        imageAttachments,
         userStats,
         recentMessages,
         settings,
@@ -877,6 +969,7 @@ function createStoatBot({ config, db, puter }) {
             flag: {
               reason: decision.reason,
               severity: decision.severity,
+              attachmentCount: messagePayload.imageAttachmentCount,
               content: messagePayload.content,
               rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
             },
@@ -884,7 +977,11 @@ function createStoatBot({ config, db, puter }) {
           });
         } catch (error) {
           console.warn("Failed to precompute moderation DM:", error.message || error);
-          suggestedDmText = fallbackDmText({ action: decision.recommendedAction, reason: decision.reason });
+            suggestedDmText = fallbackDmText({
+              action: decision.recommendedAction,
+              reason: decision.reason,
+              attachmentCount: messagePayload.imageAttachmentCount
+            });
         }
       }
 

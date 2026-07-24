@@ -237,6 +237,8 @@ function buildSystemPrompt(rules) {
     "Return JSON only. No markdown. No prose outside JSON.",
     "Do not reveal hidden chain-of-thought or internal reasoning.",
     "Evaluate whether the message violates the rules and propose an action.",
+    "Inspect any attached images together with the message text.",
+    "Explicit, sexual, violent, self-harm, or event-related images should be treated as moderation evidence.",
     "Take context and prior violations into account.",
     "You must flag direct threats and self-harm encouragement (e.g. 'kys', 'kill yourself').",
     "Always provide both a short summary and a rationale, even when not flagged.",
@@ -257,6 +259,64 @@ function buildSystemPrompt(rules) {
     "Server rules:",
     rules.map((rule, idx) => `${idx + 1}. ${rule}`).join("\n")
   ].join("\n");
+}
+
+function buildModerationUserPayload({ message, userStats, recentMessages, settings, imageAttachments }) {
+  const payload = {
+    message: {
+      content: message.content,
+      channelName: message.channelName,
+      createdAt: message.createdAt,
+      username: message.username,
+      displayName: message.displayName,
+      attachmentCount: Array.isArray(imageAttachments) ? imageAttachments.length : 0
+    },
+    userViolationHistory: userStats,
+    userRecentMessages: recentMessages,
+    policy: {
+      allowedActions: settings.allowedActions,
+      maxAutoAction: settings.maxAutoAction,
+      autoModeration: settings.autoModeration
+    },
+    mediaEvidence: Array.isArray(imageAttachments)
+      ? imageAttachments.map((attachment, index) => ({
+        index: index + 1,
+        filename: attachment.filename || null,
+        contentType: attachment.contentType || null,
+        source: attachment.source || null
+      }))
+      : []
+  };
+
+  return JSON.stringify(payload, null, 2);
+}
+
+function buildMultimodalUserMessage({ messageText, imageAttachments, aiProvider }) {
+  const attachments = Array.isArray(imageAttachments) ? imageAttachments : [];
+  if (!attachments.length) {
+    return { role: "user", content: messageText };
+  }
+
+  if (aiProvider === "ollama") {
+    return {
+      role: "user",
+      content: messageText,
+      images: attachments.map((attachment) => attachment.base64).filter(Boolean)
+    };
+  }
+
+  return {
+    role: "user",
+    content: [
+      { type: "text", text: messageText },
+      ...attachments.map((attachment) => ({
+        type: "image_url",
+        image_url: {
+          url: attachment.dataUrl
+        }
+      }))
+    ]
+  };
 }
 
 function parseModelJson(rawText) {
@@ -377,7 +437,8 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
           content: message.content,
           channelName: message.channelName,
           username: message.username,
-          displayName: message.displayName
+          displayName: message.displayName,
+          attachmentCount: Array.isArray(message.imageAttachments) ? message.imageAttachments.length : 0
         },
         rules
       },
@@ -552,33 +613,25 @@ async function moderateMessage({
   temperature,
   rules,
   message,
+  imageAttachments = [],
   userStats,
   recentMessages,
   settings,
   allowedByCap
 }) {
   const systemPrompt = buildSystemPrompt(rules);
-
-  const userPrompt = JSON.stringify(
-    {
-      message: {
-        content: message.content,
-        channelName: message.channelName,
-        createdAt: message.createdAt,
-        username: message.username,
-        displayName: message.displayName
-      },
-      userViolationHistory: userStats,
-      userRecentMessages: recentMessages,
-      policy: {
-        allowedActions: settings.allowedActions,
-        maxAutoAction: settings.maxAutoAction,
-        autoModeration: settings.autoModeration
-      }
-    },
-    null,
-    2
-  );
+  const userPrompt = buildModerationUserPayload({
+    message,
+    userStats,
+    recentMessages,
+    settings,
+    imageAttachments
+  });
+  const userMessage = buildMultimodalUserMessage({
+    messageText: userPrompt,
+    imageAttachments,
+    aiProvider: settings.aiProvider
+  });
 
   let parsed = null;
   let normalized = null;
@@ -589,14 +642,14 @@ async function moderateMessage({
     const response = await puter.ai.chat(
       [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
+        userMessage
       ],
       {
         model,
         temperature,
         max_tokens: 350,
         stream: false,
-        response_format: { type: "json_object" }
+        ...(settings.aiProvider !== "ollama" ? { response_format: { type: "json_object" } } : {})
       }
     );
 
