@@ -1,24 +1,84 @@
-const { init } = require("@heyputer/puter.js/src/init.cjs");
+const DEFAULT_PUTER_API_ORIGIN = process.env.PUTER_API_ORIGIN || "https://api.puter.com";
 
-function ensurePuterNodePolyfills() {
-  if (typeof globalThis.Event !== "function") {
-    globalThis.Event = class Event {
-      constructor(type, params = {}) {
-        this.type = type;
-        this.bubbles = Boolean(params.bubbles);
-        this.cancelable = Boolean(params.cancelable);
-        this.composed = Boolean(params.composed);
-      }
-    };
+function extractTextFromResponse(result) {
+  if (!result) {
+    return "";
   }
 
-  if (typeof globalThis.CustomEvent !== "function") {
-    globalThis.CustomEvent = class CustomEvent extends globalThis.Event {
-      constructor(type, params = {}) {
-        super(type, params);
-        this.detail = params.detail;
-      }
-    };
+  if (typeof result?.message?.content === "string") {
+    return result.message.content;
+  }
+
+  if (Array.isArray(result?.message?.content)) {
+    const textParts = result.message.content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (typeof part?.text === "string") {
+          return part.text;
+        }
+        return "";
+      })
+      .filter(Boolean);
+
+    return textParts.join("\n");
+  }
+
+  if (typeof result?.text === "string") {
+    return result.text;
+  }
+
+  if (typeof result === "string") {
+    return result;
+  }
+
+  return JSON.stringify(result);
+}
+
+function normalizeChatResult(rawResult) {
+  const content = extractTextFromResponse(rawResult);
+  return {
+    ...rawResult,
+    message: {
+      ...(rawResult?.message || {}),
+      content
+    },
+    toString() {
+      return content;
+    },
+    valueOf() {
+      return content;
+    }
+  };
+}
+
+async function callPuterDriver({ authToken, apiOrigin, iface, service, method, args }) {
+  const response = await fetch(`${apiOrigin}/drivers/call`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain;actually=json",
+      Authorization: `Bearer ${authToken}`
+    },
+    body: JSON.stringify({
+      interface: iface,
+      ...(service ? { service } : {}),
+      method,
+      args,
+      auth_token: authToken
+    })
+  });
+
+  const textBody = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Puter API request failed (${response.status}): ${textBody.slice(0, 300)}`);
+  }
+
+  try {
+    return JSON.parse(textBody);
+  } catch {
+    return textBody;
   }
 }
 
@@ -27,9 +87,32 @@ function createPuterClient(authToken) {
     throw new Error("Missing Puter auth token");
   }
 
-  ensurePuterNodePolyfills();
+  return {
+    ai: {
+      async chat(messages, options = {}) {
+        const args = {
+          messages: Array.isArray(messages)
+            ? messages
+            : [{ role: "user", content: String(messages || "") }],
+          ...(options?.model ? { model: options.model } : {}),
+          ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
+          ...(options?.max_tokens !== undefined ? { max_tokens: options.max_tokens } : {}),
+          ...(options?.response_format ? { response_format: options.response_format } : {})
+        };
 
-  return init(authToken);
+        const rawResult = await callPuterDriver({
+          authToken,
+          apiOrigin: DEFAULT_PUTER_API_ORIGIN,
+          iface: "puter-chat-completion",
+          service: "ai-chat",
+          method: "complete",
+          args
+        });
+
+        return normalizeChatResult(rawResult);
+      }
+    }
+  };
 }
 
 module.exports = {
