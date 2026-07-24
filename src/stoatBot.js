@@ -659,19 +659,7 @@ function createStoatBot({ config, db, puter }) {
       }
     };
 
-    const queueDmText = async () => {
-      try {
-        return await composeUserModerationDm({
-          puter,
-          settings,
-          flag,
-          action
-        });
-      } catch (error) {
-        console.warn("Failed to compose AI moderation DM:", error.message || error);
-        return fallbackDmText({ action, reason: flag.reason });
-      }
-    };
+    const dmText = String(flag.notification_text || "").trim() || fallbackDmText({ action, reason: flag.reason });
 
     const outcome = await executeModerationAction({
       server,
@@ -682,7 +670,7 @@ function createStoatBot({ config, db, puter }) {
       reason: `${flag.reason} | ${flag.rationale || "AI flag"}`,
       timeoutMinutes: settings.timeoutMinutes,
       by: moderatorUserId ? `Moderator ${moderatorUserId}` : "AI",
-      queueDmText,
+      dmText,
       onDmStatus
     });
 
@@ -880,6 +868,26 @@ function createStoatBot({ config, db, puter }) {
         allowedByCap: (action, cap) => db.allowedByCap(action, cap)
       });
 
+      let suggestedDmText = "";
+      if (decision.flagged) {
+        try {
+          suggestedDmText = await composeUserModerationDm({
+            puter,
+            settings,
+            flag: {
+              reason: decision.reason,
+              severity: decision.severity,
+              content: messagePayload.content,
+              rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
+            },
+            action: decision.recommendedAction
+          });
+        } catch (error) {
+          console.warn("Failed to precompute moderation DM:", error.message || error);
+          suggestedDmText = fallbackDmText({ action: decision.recommendedAction, reason: decision.reason });
+        }
+      }
+
       const messageRowId = db.insertMessage({
         ...messagePayload,
         flagged: decision.flagged,
@@ -913,7 +921,8 @@ function createStoatBot({ config, db, puter }) {
           severity: decision.severity,
           confidence: decision.confidence,
           recommendedAction: decision.recommendedAction,
-          rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
+          rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`,
+          notificationText: suggestedDmText
         });
         flagId = existingPending.id;
       } else {
@@ -927,7 +936,8 @@ function createStoatBot({ config, db, puter }) {
           severity: decision.severity,
           confidence: decision.confidence,
           recommendedAction: decision.recommendedAction,
-          rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
+          rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`,
+          notificationText: suggestedDmText
         });
       }
 

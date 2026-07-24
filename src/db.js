@@ -101,6 +101,7 @@ function createDatabase(dbPath, seedSettings = {}) {
       confidence REAL,
       recommended_action TEXT NOT NULL,
       rationale TEXT,
+      notification_text TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       moderator_user_id TEXT,
       moderation_message_id TEXT,
@@ -131,6 +132,7 @@ function createDatabase(dbPath, seedSettings = {}) {
   ensureColumn(db, "messages", "ai_summary", "TEXT");
   ensureColumn(db, "messages", "guild_name", "TEXT");
   ensureColumn(db, "messages", "edited_at", "TEXT");
+  ensureColumn(db, "flags", "notification_text", "TEXT");
 
   const defaultSettings = {
     stoatBotToken: "",
@@ -347,10 +349,11 @@ function createDatabase(dbPath, seedSettings = {}) {
           confidence,
           recommended_action,
           rationale,
+          notification_text,
           status,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
       `).run(
         payload.messageRowId,
         payload.discordMessageId,
@@ -362,6 +365,7 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.confidence,
         payload.recommendedAction,
         payload.rationale,
+        payload.notificationText || null,
         now,
         now
       );
@@ -423,6 +427,7 @@ function createDatabase(dbPath, seedSettings = {}) {
             confidence = ?,
             recommended_action = ?,
             rationale = ?,
+            notification_text = ?,
             updated_at = ?
         WHERE id = ?
       `).run(
@@ -431,6 +436,7 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.confidence,
         payload.recommendedAction,
         payload.rationale,
+        payload.notificationText || null,
         new Date().toISOString(),
         flagId
       );
