@@ -236,7 +236,7 @@ function createDatabase(dbPath, seedSettings = {}) {
           username, display_name, content, created_at, edited_at,
           flagged, flag_reason, ai_confidence, ai_recommended_action, ai_summary, ai_rationale, ai_raw_json,
           image_attachment_count, image_attachment_preview_url, image_attachment_preview_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(discord_message_id) DO UPDATE SET
           guild_id = excluded.guild_id,
           guild_name = excluded.guild_name,
