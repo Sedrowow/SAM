@@ -102,6 +102,29 @@ function parseModelJson(rawText) {
   }
 
   if (typeof rawText === "object") {
+    if (Array.isArray(rawText)) {
+      const combined = rawText
+        .map((part) => {
+          if (typeof part === "string") {
+            return part;
+          }
+          if (typeof part?.text === "string") {
+            return part.text;
+          }
+          if (typeof part?.content === "string") {
+            return part.content;
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+
+      if (combined) {
+        return parseModelJson(combined);
+      }
+    }
+
     const hasDecisionShape =
       rawText.flagged !== undefined ||
       rawText.reason !== undefined ||
@@ -117,6 +140,7 @@ function parseModelJson(rawText) {
       rawText?.result?.message?.content ||
       rawText?.data?.message?.content ||
       rawText?.choices?.[0]?.message?.content ||
+      rawText?.output_text ||
       rawText?.text ||
       null;
 
@@ -143,6 +167,64 @@ function parseModelJson(rawText) {
   }
 
   return JSON.parse(cleaned);
+}
+
+async function parseOrRepairDecision({ puter, model, temperature, rawText, message, rules }) {
+  try {
+    return parseModelJson(rawText);
+  } catch {
+    const repairPrompt = JSON.stringify(
+      {
+        task: "Convert moderation analysis into strict JSON schema.",
+        schema: {
+          flagged: "boolean",
+          reason: "none|harassment|hate|sexual|violence|self-harm|spam|scam|other",
+          severity: "low|medium|high|critical",
+          confidence: "number 0..1",
+          recommendedAction: "none|warn|delete|timeout|kick|ban",
+          summary: "string",
+          rationale: "string"
+        },
+        sourceText: String(rawText || ""),
+        message: {
+          content: message.content,
+          channelName: message.channelName,
+          username: message.username,
+          displayName: message.displayName
+        },
+        rules
+      },
+      null,
+      2
+    );
+
+    const repairResp = await puter.ai.chat(
+      [
+        {
+          role: "system",
+          content: "Return ONLY valid JSON matching the schema. Do not include markdown."
+        },
+        { role: "user", content: repairPrompt }
+      ],
+      {
+        model,
+        temperature: Math.min(temperature || 0.1, 0.2),
+        max_tokens: 350,
+        stream: false,
+        response_format: { type: "json_object" }
+      }
+    );
+
+    const repairedText =
+      repairResp?.message?.content?.[0]?.text ||
+      repairResp?.message?.content ||
+      repairResp?.result?.message?.content ||
+      repairResp?.data?.message?.content ||
+      repairResp?.result ||
+      repairResp;
+
+    return parseModelJson(repairedText);
+  }
 }
 
 function normalizeDecision(decision) {
@@ -303,6 +385,7 @@ async function moderateMessage({
   let parsed = null;
   let normalized = null;
   let aiError = null;
+  let rawModelText = null;
 
   try {
     const response = await puter.ai.chat(
@@ -314,11 +397,12 @@ async function moderateMessage({
         model,
         temperature,
         max_tokens: 350,
+        stream: false,
         response_format: { type: "json_object" }
       }
     );
 
-    const rawText =
+    rawModelText =
       response?.message?.content?.[0]?.text ||
       response?.message?.content ||
       response?.result?.message?.content ||
@@ -326,7 +410,14 @@ async function moderateMessage({
       response?.result ||
       response;
 
-    parsed = parseModelJson(rawText);
+    parsed = await parseOrRepairDecision({
+      puter,
+      model,
+      temperature,
+      rawText: rawModelText,
+      message,
+      rules
+    });
     normalized = normalizeDecision(parsed);
   } catch (error) {
     aiError = error;
@@ -359,7 +450,12 @@ async function moderateMessage({
     summary: withHeuristics.summary || summarizeWithContext(message, recentMessages),
     rationale: withHeuristics.rationale || "Model provided no rationale.",
     recommendedAction: policySafeAction,
-    rawJson: JSON.stringify(parsed || { aiError: aiError?.message || null })
+    rawJson: JSON.stringify(
+      parsed || {
+        aiError: aiError?.message || null,
+        rawModelText: typeof rawModelText === "string" ? rawModelText.slice(0, 3000) : rawModelText || null
+      }
+    )
   };
 }
 

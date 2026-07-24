@@ -126,9 +126,12 @@ function createPuterClient(authToken) {
           messages: Array.isArray(messages)
             ? messages
             : [{ role: "user", content: String(messages || "") }],
+          stream: false,
           ...(options?.model ? { model: options.model } : {}),
+          ...(options?.stream !== undefined ? { stream: Boolean(options.stream) } : {}),
           ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
           ...(options?.max_tokens !== undefined ? { max_tokens: options.max_tokens } : {}),
+          ...(options?.tools ? { tools: options.tools } : {}),
           ...(options?.response_format ? { response_format: options.response_format } : {})
         };
 
