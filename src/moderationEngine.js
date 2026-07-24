@@ -239,11 +239,13 @@ function buildSystemPrompt(rules) {
     "Evaluate whether the message violates the rules and propose an action.",
     "Inspect any attached images together with the message text.",
     "Explicit, sexual, violent, self-harm, or event-related images should be treated as moderation evidence.",
+    "When images are attached, describe the visible content in a short imageDescription field, and make the summary reference that visual evidence.",
+    "Do not use generic summaries like 'image reviewed' when imageDescription can be provided; the summary must say what is visible.",
     "Take context and prior violations into account.",
     "You must flag direct threats and self-harm encouragement (e.g. 'kys', 'kill yourself').",
     "Always provide both a short summary and a rationale, even when not flagged.",
-    "summary must describe the user message and context pattern only; never mention prompt/system/policy formatting.",
-    "rationale must explain why it is flagged or not flagged, and why recommendedAction is chosen. Mention what escalate would imply.",
+    "summary must describe the message or attached image evidence and context pattern only; never mention prompt/system/policy formatting.",
+    "rationale must explain why it is flagged or not flagged, and why recommendedAction is chosen. Mention what escalate would imply and why the image evidence matters if there is one.",
     "JSON schema:",
     "{",
     '  "flagged": boolean,',
@@ -251,6 +253,7 @@ function buildSystemPrompt(rules) {
     '  "severity": "low|medium|high|critical",',
     '  "confidence": number,',
     '  "recommendedAction": "none|warn|delete|timeout|kick|ban",',
+    '  "imageDescription": string,',
     '  "summary": string,',
     '  "rationale": string',
     "}",
@@ -424,6 +427,8 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
     }
   }
 
+  const hasVisualOnlyContent = imageAttachments.length > 0 && !String(message.content || "").trim();
+
   {
     const repairPrompt = JSON.stringify(
       {
@@ -434,17 +439,20 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
           severity: "low|medium|high|critical",
           confidence: "number 0..1",
           recommendedAction: "none|warn|delete|timeout|kick|ban",
+          imageDescription: "string",
           summary: "string",
           rationale: "string"
         },
         sourceText: decisionPayloadToText(rawText),
         message: {
-          content: message.content,
+          content: hasVisualOnlyContent
+            ? "[No text provided. Review the attached image(s) for moderation evidence.]"
+            : message.content,
           channelName: message.channelName,
           username: message.username,
           displayName: message.displayName,
           attachmentCount: imageAttachments.length,
-          hasVisualOnlyContent: imageAttachments.length > 0 && !String(message.content || "").trim(),
+          hasVisualOnlyContent,
           mediaEvidence: imageAttachments.map((attachment, index) => ({
             index: index + 1,
             filename: attachment.filename || null,
@@ -532,6 +540,12 @@ function normalizeDecision(decision) {
       : "none";
 
   const summary = String(decision.summary || decision.brief || "").trim();
+  const imageDescription = String(
+    decision.imageDescription ||
+    decision.visualDescription ||
+    decision.imageSummary ||
+    ""
+  ).trim();
 
   return {
     flagged,
@@ -539,15 +553,19 @@ function normalizeDecision(decision) {
     severity,
     confidence,
     recommendedAction,
+    imageDescription,
     summary,
     rationale: String(decision.rationale || "")
   };
 }
 
-function summarizeWithContext(message, recentMessages, attachmentCount = 0) {
+function summarizeWithContext(message, recentMessages, attachmentCount = 0, imageDescription = "") {
   const text = String(message?.content || "").trim();
   if (!text) {
     if (attachmentCount > 0) {
+      if (imageDescription) {
+        return `Attached image${attachmentCount === 1 ? "" : "s"}: ${imageDescription}`;
+      }
       return `Attached image${attachmentCount === 1 ? "" : "s"} reviewed.`;
     }
     return "Empty or non-text message.";
@@ -586,11 +604,13 @@ function escalateAction(action) {
   return path[action] || "warn";
 }
 
-function rationaleTemplate({ flagged, reason, severity, recommendedAction, recentMessages, attachmentCount = 0 }) {
+function rationaleTemplate({ flagged, reason, severity, recommendedAction, recentMessages, attachmentCount = 0, imageDescription = "" }) {
   const contextCount = Array.isArray(recentMessages) ? recentMessages.length : 0;
   const escalate = escalateAction(recommendedAction);
   const imageContext = attachmentCount > 0
-    ? ` The attached image${attachmentCount === 1 ? " was" : "s were"} also reviewed as moderation evidence.`
+    ? imageDescription
+      ? ` Image evidence: ${imageDescription}.`
+      : ` The attached image${attachmentCount === 1 ? " was" : "s were"} also reviewed as moderation evidence.`
     : "";
 
   if (!flagged) {
@@ -603,10 +623,18 @@ function rationaleTemplate({ flagged, reason, severity, recommendedAction, recen
 function applySafetyHeuristics({ message, recentMessages, normalized, attachmentCount = 0 }) {
   const safeSummary = cleanDisplayText(normalized.summary, 260);
   const safeRationale = cleanDisplayText(normalized.rationale, 700);
+  const imageDescription = cleanDisplayText(normalized.imageDescription, 220);
+  const summaryNeedsImageEvidence = attachmentCount > 0 && (
+    !safeSummary ||
+    /^(attached image|image reviewed|attached images reviewed|empty or non-text message\.)$/i.test(safeSummary) ||
+    (imageDescription && !safeSummary.toLowerCase().includes(imageDescription.slice(0, 20).toLowerCase()))
+  );
 
-  const summary = safeSummary && !looksLikePromptOrDeliberation(safeSummary)
-    ? safeSummary
-    : summarizeWithContext(message, recentMessages, attachmentCount);
+  const summary = summaryNeedsImageEvidence
+    ? summarizeWithContext(message, recentMessages, attachmentCount, imageDescription)
+    : (safeSummary && !looksLikePromptOrDeliberation(safeSummary)
+      ? safeSummary
+      : summarizeWithContext(message, recentMessages, attachmentCount, imageDescription));
 
   const rationale = safeRationale && !looksLikePromptOrDeliberation(safeRationale)
     ? safeRationale
@@ -616,7 +644,8 @@ function applySafetyHeuristics({ message, recentMessages, normalized, attachment
       severity: normalized.severity,
       recommendedAction: normalized.recommendedAction,
       recentMessages,
-      attachmentCount
+      attachmentCount,
+      imageDescription
     });
 
   return {
@@ -698,6 +727,7 @@ async function moderateMessage({
       severity: "medium",
       confidence: 0,
       recommendedAction: "none",
+      imageDescription: "",
       summary: summarizeWithContext(message, recentMessages, imageAttachments.length),
       rationale: `AI unavailable. Using deterministic safety fallback. (${error.message})`
     };
