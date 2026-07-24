@@ -10,6 +10,19 @@ const REACTION_APPROVE = "✅";
 const REACTION_DISMISS = "🛑";
 const REACTION_ESCALATE = "⏫";
 
+function ensureWebSocketGlobal() {
+  if (typeof globalThis.WebSocket === "function") {
+    return;
+  }
+
+  try {
+    const ws = require("ws");
+    globalThis.WebSocket = ws.WebSocket || ws;
+  } catch (error) {
+    throw new Error(`WebSocket is unavailable. Install dependency \"ws\": ${error.message}`);
+  }
+}
+
 function createFlagLogText({ flagId, message, decision, userStats, autoApplied, actionResult }) {
   const lines = [
     "# Flagged Message",
@@ -346,6 +359,8 @@ function createStoatBot({ config, db, puter }) {
     },
 
     async start() {
+      ensureWebSocketGlobal();
+
       const sdk = await import("stoat.js");
       const { Client } = sdk;
 
