@@ -19,6 +19,9 @@
   },
   "author": "",
   "license": "MIT",
+  "overrides": {
+    "open": "8.4.2"
+  },
   "dependencies": {
     "@heyputer/puter.js": "^2.5.0",
     "basic-auth": "^2.0.1",
