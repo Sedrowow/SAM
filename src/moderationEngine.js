@@ -115,6 +115,46 @@ function cleanDisplayText(text, maxLen = 600) {
   return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen - 3)}...` : cleaned;
 }
 
+function sanitizeImageDescriptionText(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const normalized = raw
+    .replace(/\r/g, "\n")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const lower = normalized.toLowerCase();
+  if (
+    lower.startsWith("{\"success\"") ||
+    lower.startsWith("{\"result\"") ||
+    lower.includes("\"tool_calls\"") ||
+    lower.includes("\"reasoning\"") ||
+    lower.includes("the user wants a factual description") ||
+    lower.includes("analyze the image")
+  ) {
+    return "";
+  }
+
+  const cleaned = normalized
+    .replace(/^here(?: is|'s)\s+/i, "")
+    .replace(/^image description:?\s*/i, "")
+    .replace(/^description:?\s*/i, "")
+    .trim();
+
+  if (!cleaned) {
+    return "";
+  }
+
+  const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] || cleaned;
+  return cleanDisplayText(firstSentence, 220);
+}
+
 function inferDecisionFromReasoning(reasoningText) {
   const text = String(reasoningText || "").trim();
   if (!text) {
@@ -379,12 +419,17 @@ async function generateImageDescription({ puter, model, temperature, imageAttach
   const description = String(
     parsed?.imageDescription ||
     parsed?.description ||
-    parsed?.summary ||
-    extractFinalAnswerText(rawText) ||
+    parsed?.visualDescription ||
+    parsed?.message?.content ||
+    parsed?.result?.message?.content ||
+    parsed?.data?.message?.content ||
+    parsed?.choices?.[0]?.message?.content ||
+    parsed?.output_text ||
+    parsed?.text ||
     ""
   ).trim();
 
-  return cleanDisplayText(description, 220);
+  return sanitizeImageDescriptionText(description);
 }
 
 function parseModelJson(rawText) {
@@ -600,12 +645,12 @@ function normalizeDecision(decision) {
       : "none";
 
   const summary = String(decision.summary || decision.brief || "").trim();
-  const imageDescription = String(
+  const imageDescription = sanitizeImageDescriptionText(String(
     decision.imageDescription ||
     decision.visualDescription ||
     decision.imageSummary ||
     ""
-  ).trim();
+  ).trim());
 
   return {
     flagged,
