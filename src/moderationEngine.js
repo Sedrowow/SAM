@@ -262,14 +262,19 @@ function buildSystemPrompt(rules) {
 }
 
 function buildModerationUserPayload({ message, userStats, recentMessages, settings, imageAttachments }) {
+  const attachmentCount = Array.isArray(imageAttachments) ? imageAttachments.length : 0;
+  const hasVisualOnlyContent = attachmentCount > 0 && !String(message.content || "").trim();
   const payload = {
     message: {
-      content: message.content,
+      content: hasVisualOnlyContent
+        ? "[No text provided. Review the attached image(s) for moderation evidence.]"
+        : message.content,
       channelName: message.channelName,
       createdAt: message.createdAt,
       username: message.username,
       displayName: message.displayName,
-      attachmentCount: Array.isArray(imageAttachments) ? imageAttachments.length : 0
+      attachmentCount,
+      hasVisualOnlyContent
     },
     userViolationHistory: userStats,
     userRecentMessages: recentMessages,
@@ -386,7 +391,7 @@ function parseModelJson(rawText) {
   return JSON.parse(cleaned);
 }
 
-async function parseOrRepairDecision({ puter, model, temperature, rawText, message, rules }) {
+async function parseOrRepairDecision({ puter, model, temperature, rawText, message, rules, imageAttachments = [] }) {
   let parsed;
   try {
     parsed = parseModelJson(rawText);
@@ -438,7 +443,14 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
           channelName: message.channelName,
           username: message.username,
           displayName: message.displayName,
-          attachmentCount: Array.isArray(message.imageAttachments) ? message.imageAttachments.length : 0
+          attachmentCount: imageAttachments.length,
+          hasVisualOnlyContent: imageAttachments.length > 0 && !String(message.content || "").trim(),
+          mediaEvidence: imageAttachments.map((attachment, index) => ({
+            index: index + 1,
+            filename: attachment.filename || null,
+            contentType: attachment.contentType || null,
+            source: attachment.source || null
+          }))
         },
         rules
       },
@@ -532,9 +544,12 @@ function normalizeDecision(decision) {
   };
 }
 
-function summarizeWithContext(message, recentMessages) {
+function summarizeWithContext(message, recentMessages, attachmentCount = 0) {
   const text = String(message?.content || "").trim();
   if (!text) {
+    if (attachmentCount > 0) {
+      return `Attached image${attachmentCount === 1 ? "" : "s"} reviewed.`;
+    }
     return "Empty or non-text message.";
   }
 
@@ -571,24 +586,27 @@ function escalateAction(action) {
   return path[action] || "warn";
 }
 
-function rationaleTemplate({ flagged, reason, severity, recommendedAction, recentMessages }) {
+function rationaleTemplate({ flagged, reason, severity, recommendedAction, recentMessages, attachmentCount = 0 }) {
   const contextCount = Array.isArray(recentMessages) ? recentMessages.length : 0;
   const escalate = escalateAction(recommendedAction);
+  const imageContext = attachmentCount > 0
+    ? ` The attached image${attachmentCount === 1 ? " was" : "s were"} also reviewed as moderation evidence.`
+    : "";
 
   if (!flagged) {
-    return `No clear policy violation was detected for this message in current context (${contextCount} recent message(s) reviewed). Approve keeps action at ${recommendedAction}. Escalate would move to ${escalate} only if moderators have additional evidence outside the captured context.`;
+    return `No clear policy violation was detected in current context (${contextCount} recent message(s) reviewed). Approve keeps action at ${recommendedAction}. Escalate would move to ${escalate} only if moderators have additional evidence outside the captured context.${imageContext}`;
   }
 
-  return `Flagged for ${reason} with ${severity} severity based on message content and recent context (${contextCount} recent message(s) reviewed). Approve applies ${recommendedAction}. Escalate would move to ${escalate} if moderators judge risk as more severe.`;
+  return `Flagged for ${reason} with ${severity} severity based on the message and recent context (${contextCount} recent message(s) reviewed). Approve applies ${recommendedAction}. Escalate would move to ${escalate} if moderators judge risk as more severe.${imageContext}`;
 }
 
-function applySafetyHeuristics({ message, recentMessages, normalized }) {
+function applySafetyHeuristics({ message, recentMessages, normalized, attachmentCount = 0 }) {
   const safeSummary = cleanDisplayText(normalized.summary, 260);
   const safeRationale = cleanDisplayText(normalized.rationale, 700);
 
   const summary = safeSummary && !looksLikePromptOrDeliberation(safeSummary)
     ? safeSummary
-    : summarizeWithContext(message, recentMessages);
+    : summarizeWithContext(message, recentMessages, attachmentCount);
 
   const rationale = safeRationale && !looksLikePromptOrDeliberation(safeRationale)
     ? safeRationale
@@ -597,7 +615,8 @@ function applySafetyHeuristics({ message, recentMessages, normalized }) {
       reason: normalized.reason,
       severity: normalized.severity,
       recommendedAction: normalized.recommendedAction,
-      recentMessages
+      recentMessages,
+      attachmentCount
     });
 
   return {
@@ -667,7 +686,8 @@ async function moderateMessage({
       temperature,
       rawText: rawModelText,
       message,
-      rules
+      rules,
+      imageAttachments
     });
     normalized = normalizeDecision(parsed);
   } catch (error) {
@@ -678,7 +698,7 @@ async function moderateMessage({
       severity: "medium",
       confidence: 0,
       recommendedAction: "none",
-      summary: summarizeWithContext(message, recentMessages),
+      summary: summarizeWithContext(message, recentMessages, imageAttachments.length),
       rationale: `AI unavailable. Using deterministic safety fallback. (${error.message})`
     };
   }
@@ -686,7 +706,8 @@ async function moderateMessage({
   const withHeuristics = applySafetyHeuristics({
     message,
     recentMessages,
-    normalized
+    normalized,
+    attachmentCount: imageAttachments.length
   });
 
   const policySafeAction = pickActionWithinPolicy(
@@ -698,7 +719,7 @@ async function moderateMessage({
 
   return {
     ...withHeuristics,
-    summary: withHeuristics.summary || summarizeWithContext(message, recentMessages),
+    summary: withHeuristics.summary || summarizeWithContext(message, recentMessages, imageAttachments.length),
     rationale: withHeuristics.rationale || "Model provided no rationale.",
     recommendedAction: policySafeAction,
     rawJson: JSON.stringify(
