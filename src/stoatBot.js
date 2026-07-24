@@ -215,13 +215,59 @@ function cleanDmText(text) {
   const cleaned = String(text || "")
     .replace(/^```[a-z]*\s*/i, "")
     .replace(/```$/i, "")
+    .replace(/^\s*\d+\s*\(?too\s+robotic\)?\s*:?\s*/i, "")
+    .replace(/^\s*too\s+robotic\s*:?\s*/i, "")
     .replace(/^\s*\*+\s*/gm, "")
     .replace(/^\s*[-•]\s*/gm, "")
     .replace(/^\s*\*\s*/gm, "")
+    .replace(/^\s*"|"\s*$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
   return compactText(cleaned, 1400);
+}
+
+function parseJsonObjectFromText(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    const match = value.match(/\{[\s\S]*\}$/);
+    if (!match) {
+      return null;
+    }
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function isLikelyCompleteDm(text) {
+  const body = String(text || "").trim();
+  if (!body) {
+    return false;
+  }
+
+  const sentenceCount = (body.match(/[.!?](?:\s|$)/g) || []).length;
+  if (sentenceCount < 2) {
+    return false;
+  }
+
+  if (body.length < 90) {
+    return false;
+  }
+
+  if (/[:\-]$/.test(body)) {
+    return false;
+  }
+
+  return true;
 }
 
 function extractDraftFromReasoning(reasoning) {
@@ -314,20 +360,22 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
   };
 
   const prompt = JSON.stringify(payload, null, 2);
+  const systemPrompt = [
+    "Write a direct, personal DM to a user about a moderation action.",
+    "Tone: human, calm, respectful, not robotic.",
+    "Explain clearly what happened and why in plain language.",
+    "Do not mention moderators, admins, or AI systems.",
+    "Do not mention policies in abstract terms; refer to behavior plainly.",
+    "Keep it between 4 and 7 short sentences.",
+    "If reasonCategory is self-harm, use a supportive and compassionate tone, encourage reaching out to trusted people or local emergency services if immediate danger exists, and avoid judgmental wording.",
+    "Return only JSON in this schema: {\"dm\": string}."
+  ].join("\n");
+
   const response = await puter.ai.chat(
     [
       {
         role: "system",
-        content: [
-          "Write a direct, personal DM to a user about a moderation action.",
-          "Tone: human, calm, respectful, not robotic.",
-          "Explain clearly what happened and why in plain language.",
-          "Do not mention moderators, admins, or AI systems.",
-          "Do not mention policies in abstract terms; refer to behavior plainly.",
-          "Keep it between 4 and 7 short sentences.",
-          "No markdown, no bullet points, no JSON.",
-          "If reasonCategory is self-harm, use a supportive and compassionate tone, encourage reaching out to trusted people or local emergency services if immediate danger exists, and avoid judgmental wording."
-        ].join("\n")
+        content: systemPrompt
       },
       {
         role: "user",
@@ -337,14 +385,68 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
     {
       model: settings.aiProvider === "ollama" ? settings.ollamaModel : settings.puterModel,
       temperature: Math.min(Math.max(Number(settings.puterTemperature || 0.3), 0.2), 0.8),
-      max_tokens: 280,
-      stream: false
+      max_tokens: 420,
+      stream: false,
+      ...(settings.aiProvider !== "ollama" ? { response_format: { type: "json_object" } } : {})
     }
   );
 
-  const text = extractPlainDmFromResponse(response);
+  let text = extractPlainDmFromResponse(response);
+
+  if (text) {
+    const parsed = parseJsonObjectFromText(text);
+    if (parsed && typeof parsed.dm === "string") {
+      text = cleanDmText(parsed.dm);
+    }
+  }
+
+  if (!isLikelyCompleteDm(text)) {
+    const repair = await puter.ai.chat(
+      [
+        {
+          role: "system",
+          content: "Rewrite into one complete, natural DM to the user. Return only JSON: {\"dm\": string}."
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            action,
+            reasonCategory: flag.reason,
+            messageExcerpt: compactText(flag.content || "", 180),
+            draft: text || "",
+            rules: [
+              "Explain what happened and why in plain language.",
+              "No markdown, no bullets, no meta commentary.",
+              "Must be complete and readable."
+            ]
+          }, null, 2)
+        }
+      ],
+      {
+        model: settings.aiProvider === "ollama" ? settings.ollamaModel : settings.puterModel,
+        temperature: 0.35,
+        max_tokens: 420,
+        stream: false,
+        ...(settings.aiProvider !== "ollama" ? { response_format: { type: "json_object" } } : {})
+      }
+    );
+
+    const repairedRaw = extractPlainDmFromResponse(repair);
+    const repairedJson = parseJsonObjectFromText(repairedRaw);
+    const repairedText = repairedJson && typeof repairedJson.dm === "string"
+      ? cleanDmText(repairedJson.dm)
+      : cleanDmText(repairedRaw);
+
+    if (isLikelyCompleteDm(repairedText)) {
+      text = repairedText;
+    }
+  }
 
   if (!text) {
+    return fallbackDmText({ action, reason: flag.reason });
+  }
+
+  if (!isLikelyCompleteDm(text)) {
     return fallbackDmText({ action, reason: flag.reason });
   }
 
