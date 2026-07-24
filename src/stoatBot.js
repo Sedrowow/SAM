@@ -185,7 +185,7 @@ function isImageAttachment(attachment) {
 }
 
 async function fetchImageAttachment(attachment, maxBytes = 4 * 1024 * 1024) {
-  const sourceUrl = attachment?.proxyURL || attachment?.proxyUrl || attachment?.url;
+  const sourceUrl = attachment?.previewUrl || attachment?.originalUrl || attachment?.proxyURL || attachment?.proxyUrl || attachment?.url;
   if (!sourceUrl) {
     return null;
   }
@@ -505,6 +505,7 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
     "Do not mention policies in abstract terms; refer to behavior plainly.",
     "Keep it between 4 and 7 short sentences.",
     "If attachmentCount is greater than zero, refer to the image or images they shared.",
+    "If the text message is empty, still explain that the image itself was reviewed.",
     "If reasonCategory is self-harm, use a supportive and compassionate tone, encourage reaching out to trusted people or local emergency services if immediate danger exists, and avoid judgmental wording.",
     "Return only JSON in this schema: {\"dm\": string}."
   ].join("\n");
@@ -929,6 +930,8 @@ function createStoatBot({ config, db, puter }) {
 
     const imageAttachments = await collectImageAttachments(msg);
     messagePayload.imageAttachmentCount = imageAttachments.length;
+    messagePayload.imageAttachmentPreviewUrl = imageAttachments[0]?.source || null;
+    messagePayload.imageAttachmentPreviewName = imageAttachments[0]?.filename || null;
 
     try {
       db.insertRecentContext({

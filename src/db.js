@@ -77,7 +77,10 @@ function createDatabase(dbPath, seedSettings = {}) {
       ai_confidence REAL,
       ai_recommended_action TEXT,
       ai_rationale TEXT,
-      ai_raw_json TEXT
+      ai_raw_json TEXT,
+      image_attachment_count INTEGER NOT NULL DEFAULT 0,
+      image_attachment_preview_url TEXT,
+      image_attachment_preview_name TEXT
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_discord_message_id
@@ -132,6 +135,9 @@ function createDatabase(dbPath, seedSettings = {}) {
   ensureColumn(db, "messages", "ai_summary", "TEXT");
   ensureColumn(db, "messages", "guild_name", "TEXT");
   ensureColumn(db, "messages", "edited_at", "TEXT");
+  ensureColumn(db, "messages", "image_attachment_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "messages", "image_attachment_preview_url", "TEXT");
+  ensureColumn(db, "messages", "image_attachment_preview_name", "TEXT");
   ensureColumn(db, "flags", "notification_text", "TEXT");
 
   const defaultSettings = {
@@ -228,8 +234,9 @@ function createDatabase(dbPath, seedSettings = {}) {
         INSERT INTO messages (
           discord_message_id, guild_id, guild_name, channel_id, channel_name, user_id,
           username, display_name, content, created_at, edited_at,
-          flagged, flag_reason, ai_confidence, ai_recommended_action, ai_summary, ai_rationale, ai_raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          flagged, flag_reason, ai_confidence, ai_recommended_action, ai_summary, ai_rationale, ai_raw_json,
+          image_attachment_count, image_attachment_preview_url, image_attachment_preview_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(discord_message_id) DO UPDATE SET
           guild_id = excluded.guild_id,
           guild_name = excluded.guild_name,
@@ -247,7 +254,10 @@ function createDatabase(dbPath, seedSettings = {}) {
           ai_recommended_action = excluded.ai_recommended_action,
           ai_summary = excluded.ai_summary,
           ai_rationale = excluded.ai_rationale,
-          ai_raw_json = excluded.ai_raw_json
+          ai_raw_json = excluded.ai_raw_json,
+          image_attachment_count = excluded.image_attachment_count,
+          image_attachment_preview_url = excluded.image_attachment_preview_url,
+          image_attachment_preview_name = excluded.image_attachment_preview_name
       `).run(
         payload.discordMessageId,
         payload.guildId,
@@ -266,7 +276,10 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.aiRecommendedAction ?? null,
         payload.aiSummary ?? null,
         payload.aiRationale ?? null,
-        payload.aiRawJson ?? null
+        payload.aiRawJson ?? null,
+        Number(payload.imageAttachmentCount || 0),
+        payload.imageAttachmentPreviewUrl || null,
+        payload.imageAttachmentPreviewName || null
       );
 
       const row = db.prepare("SELECT id FROM messages WHERE discord_message_id = ?").get(payload.discordMessageId);
@@ -474,7 +487,10 @@ function createDatabase(dbPath, seedSettings = {}) {
            content, created_at AS createdAt, edited_at AS editedAt, flagged,
                flag_reason AS flagReason, ai_confidence AS aiConfidence,
                ai_recommended_action AS aiRecommendedAction, ai_summary AS aiSummary,
-               ai_rationale AS aiRationale
+             ai_rationale AS aiRationale,
+             image_attachment_count AS imageAttachmentCount,
+             image_attachment_preview_url AS imageAttachmentPreviewUrl,
+             image_attachment_preview_name AS imageAttachmentPreviewName
         FROM messages
         ${where}
         ORDER BY created_at DESC

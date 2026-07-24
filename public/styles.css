@@ -226,7 +226,7 @@ fieldset label {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1300px;
+  min-width: 1450px;
 }
 
 th,
@@ -246,6 +246,34 @@ td code {
   max-width: 360px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-preview-wrap {
+  display: grid;
+  gap: 6px;
+  align-items: start;
+}
+
+.message-preview-meta {
+  font-size: 0.82rem;
+  opacity: 0.75;
+}
+
+.message-preview {
+  display: block;
+  width: 110px;
+  max-width: 110px;
+  max-height: 110px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.08);
+  background: #fff;
+}
+
+.preview-missing {
+  font-size: 0.82rem;
+  opacity: 0.7;
 }
 
 .ai-cell {

@@ -74,6 +74,23 @@ function escapeAttr(text) {
   return escapeHtml(text).replace(/"/g, "&quot;");
 }
 
+function mediaPreviewCell(row) {
+  const count = Number(row.imageAttachmentCount || 0);
+  const previewUrl = row.imageAttachmentPreviewUrl || "";
+  const previewName = row.imageAttachmentPreviewName || "image preview";
+
+  if (!count) {
+    return row.content ? "-" : "Text only";
+  }
+
+  const label = `${count} image${count === 1 ? "" : "s"}`;
+  const imageMarkup = previewUrl
+    ? `<a href="${escapeAttr(previewUrl)}" target="_blank" rel="noreferrer"><img class="message-preview" src="${escapeAttr(previewUrl)}" alt="${escapeAttr(previewName)}" loading="lazy" /></a>`
+    : "<span class=\"preview-missing\">preview unavailable</span>";
+
+  return `<div class="message-preview-wrap"><div class="message-preview-meta">${escapeHtml(label)}</div>${imageMarkup}</div>`;
+}
+
 function selectedServerId() {
   const value = qs("serverFilter")?.value || "all";
   return value && value !== "all" ? value : "";
@@ -190,11 +207,13 @@ async function loadMessages() {
 
   for (const row of messages) {
     const tr = document.createElement("tr");
+    const messageText = row.content || (Number(row.imageAttachmentCount || 0) ? "[image attachment]" : "");
     tr.innerHTML = `
       <td>${humanDate(row.createdAt)}</td>
       <td><code>${escapeHtml(row.displayName || row.username)}</code><br/><code>${escapeHtml(row.userId)}</code></td>
       <td><code>${escapeHtml(row.guildName || row.guildId || "unknown")}</code><br/><code>${escapeHtml(row.channelName || row.channelId)}</code></td>
-      <td class="message-cell">${escapeHtml(row.content || "")}</td>
+      <td class="message-cell">${escapeHtml(messageText)}</td>
+      <td>${mediaPreviewCell(row)}</td>
       <td>${row.flagged ? severityBadge(row.flagReason, true) : "-"}</td>
       <td>${severityBadge(row.aiRecommendedAction || "none", false)}</td>
       <td class="ai-cell">${escapeHtml(row.aiSummary || "-")}</td>
