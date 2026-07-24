@@ -58,6 +58,12 @@
             <input id="reasonFilter" placeholder="harassment, self-harm, spam..." />
           </label>
           <label>
+            Server
+            <select id="serverFilter">
+              <option value="all">All servers</option>
+            </select>
+          </label>
+          <label>
             Limit
             <input id="limitFilter" type="number" min="10" max="1000" value="250" />
           </label>
@@ -114,6 +120,7 @@
                 <th>Flagged</th>
                 <th>Top Reason</th>
                 <th>Enforcement</th>
+                <th>Servers</th>
                 <th>Behaviour</th>
                 <th>Observation Strictness</th>
                 <th>Last Activity</th>
@@ -200,8 +207,26 @@
           </label>
 
           <label>
+            AI provider
+            <select id="aiProvider">
+              <option value="puter">puter</option>
+              <option value="ollama">ollama</option>
+            </select>
+          </label>
+
+          <label>
             Puter model
             <input id="puterModel" placeholder="meta-llama/llama-3.1-8b-instruct" />
+          </label>
+
+          <label>
+            Ollama base URL
+            <input id="ollamaBaseUrl" placeholder="http://127.0.0.1:11434" />
+          </label>
+
+          <label>
+            Ollama model
+            <input id="ollamaModel" placeholder="llama3.1:8b-instruct" />
           </label>
 
           <label>

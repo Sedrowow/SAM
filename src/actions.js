@@ -99,10 +99,14 @@ async function sendModerationDmText({ server, channel, userId, text }) {
   return { sent: false, details: "DM delivery unavailable (user DMs may be closed)" };
 }
 
-function dispatchModerationDmAsync({ server, channel, userId, dmText, queueDmText }) {
+function dispatchModerationDmAsync({ server, channel, userId, dmText, queueDmText, onDmStatus }) {
   // Do not block moderation action execution on DM generation or delivery.
   void (async () => {
     try {
+      if (typeof onDmStatus === "function") {
+        await onDmStatus("queued", "DM has been queued.");
+      }
+
       let text = String(dmText || "").trim();
       if (!text && typeof queueDmText === "function") {
         const generated = await queueDmText();
@@ -110,11 +114,20 @@ function dispatchModerationDmAsync({ server, channel, userId, dmText, queueDmTex
       }
 
       if (!text) {
+        if (typeof onDmStatus === "function") {
+          await onDmStatus("failed", "DM text generation produced empty content.");
+        }
         return;
       }
 
-      await sendModerationDmText({ server, channel, userId, text });
+      const dmResult = await sendModerationDmText({ server, channel, userId, text });
+      if (typeof onDmStatus === "function") {
+        await onDmStatus(dmResult.sent ? "sent" : "failed", dmResult.details);
+      }
     } catch (error) {
+      if (typeof onDmStatus === "function") {
+        await onDmStatus("failed", error?.message || "Unknown DM failure");
+      }
       console.warn("Failed to send moderation DM:", error?.message || error);
     }
   })();
@@ -130,7 +143,8 @@ async function executeModerationAction({
   timeoutMinutes,
   by = "AI",
   dmText = "",
-  queueDmText = null
+  queueDmText = null,
+  onDmStatus = null
 }) {
   const normalizedReason = `${by} moderation: ${reason || "Rule violation"}`;
 
@@ -144,7 +158,8 @@ async function executeModerationAction({
       channel,
       userId,
       dmText,
-      queueDmText
+      queueDmText,
+      onDmStatus
     });
     return {
       action: "warn",
@@ -170,7 +185,8 @@ async function executeModerationAction({
       channel,
       userId,
       dmText,
-      queueDmText
+      queueDmText,
+      onDmStatus
     });
     return {
       action: "delete",
@@ -192,7 +208,8 @@ async function executeModerationAction({
       channel,
       userId,
       dmText,
-      queueDmText
+      queueDmText,
+      onDmStatus
     });
     return {
       action: "timeout",
@@ -209,7 +226,8 @@ async function executeModerationAction({
       channel,
       userId,
       dmText,
-      queueDmText
+      queueDmText,
+      onDmStatus
     });
     return {
       action: "kick",
@@ -226,7 +244,8 @@ async function executeModerationAction({
       channel,
       userId,
       dmText,
-      queueDmText
+      queueDmText,
+      onDmStatus
     });
     return {
       action: "ban",

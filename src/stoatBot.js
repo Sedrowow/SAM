@@ -33,6 +33,7 @@ function createFlagLogText({ flagId, message, decision, userStats, autoApplied, 
     `Severity: ${decision.severity}`,
     `Confidence: ${Math.round(decision.confidence * 100)}%`,
     `Suggested action: ${decision.recommendedAction}`,
+    `Suggested escalation: ${escalationFor(decision.recommendedAction)}`,
     `Prior violations: warn=${userStats.warns}, timeout=${userStats.timeouts}, kick=${userStats.kicks}, ban=${userStats.bans}`,
     "",
     "Summary:",
@@ -100,6 +101,48 @@ async function fetchChannel(client, channelId) {
     throw new Error(`Channel not found: ${channelId}`);
   }
   return channel;
+}
+
+async function editOrReplaceMessage(message, text) {
+  if (!message) {
+    return message;
+  }
+
+  if (typeof message.edit === "function") {
+    await message.edit(text);
+    return message;
+  }
+
+  if (typeof message.update === "function") {
+    await message.update({ content: text });
+    return message;
+  }
+
+  if (message.channel && typeof message.channel.sendMessage === "function") {
+    return message.channel.sendMessage(text);
+  }
+
+  return message;
+}
+
+function formatDmStatusLine({ flagId, userId, action, status, details }) {
+  const marker = {
+    queued: "queued",
+    sent: "sent",
+    failed: "failed"
+  }[status] || "pending";
+
+  const info = compactText(details || "", 220);
+  const lines = [
+    "# DM Delivery Status",
+    `Flag ID: ${flagId}`,
+    `User: ${userId}`,
+    `Action: ${action}`,
+    `Status: ${marker}`,
+    info ? `Details: ${info}` : null
+  ].filter(Boolean);
+
+  return lines.join("\n");
 }
 
 function compactText(text, maxLen = 500) {
@@ -292,7 +335,7 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
       }
     ],
     {
-      model: settings.puterModel,
+      model: settings.aiProvider === "ollama" ? settings.ollamaModel : settings.puterModel,
       temperature: Math.min(Math.max(Number(settings.puterTemperature || 0.3), 0.2), 0.8),
       max_tokens: 280,
       stream: false
@@ -317,7 +360,9 @@ function createStoatBot({ config, db, puter }) {
       ...settings,
       stoatBotToken: settings.stoatBotToken || config.stoatBotToken,
       moderationChannelId: settings.moderationChannelId || config.moderationChannelId,
+      aiProvider: settings.aiProvider || config.aiProvider || "puter",
       puterModel: settings.puterModel || config.puterModel,
+      ollamaModel: settings.ollamaModel || config.ollamaModel,
       puterTemperature: Number.isFinite(Number(settings.puterTemperature))
         ? Number(settings.puterTemperature)
         : config.puterTemperature,
@@ -421,6 +466,46 @@ function createStoatBot({ config, db, puter }) {
     }
 
     const settings = db.getSettings();
+    let dmStatusMessage = null;
+
+    if (settings.moderationChannelId) {
+      try {
+        const modChannel = await fetchChannel(client, settings.moderationChannelId);
+        dmStatusMessage = await modChannel.sendMessage(
+          formatDmStatusLine({
+            flagId: flag.id,
+            userId: flag.user_id,
+            action,
+            status: "queued",
+            details: "Preparing DM notification."
+          })
+        );
+      } catch (error) {
+        console.warn("Failed to initialize DM status message:", error.message || error);
+      }
+    }
+
+    const onDmStatus = async (status, details) => {
+      if (!dmStatusMessage) {
+        return;
+      }
+
+      try {
+        dmStatusMessage = await editOrReplaceMessage(
+          dmStatusMessage,
+          formatDmStatusLine({
+            flagId: flag.id,
+            userId: flag.user_id,
+            action,
+            status,
+            details
+          })
+        );
+      } catch (error) {
+        console.warn("Failed to update DM status message:", error.message || error);
+      }
+    };
+
     const queueDmText = async () => {
       try {
         return await composeUserModerationDm({
@@ -444,7 +529,8 @@ function createStoatBot({ config, db, puter }) {
       reason: `${flag.reason} | ${flag.rationale || "AI flag"}`,
       timeoutMinutes: settings.timeoutMinutes,
       by: moderatorUserId ? `Moderator ${moderatorUserId}` : "AI",
-      queueDmText
+      queueDmText,
+      onDmStatus
     });
 
     db.recordUserAction(flag.guild_id, flag.user_id, action);
@@ -572,6 +658,182 @@ function createStoatBot({ config, db, puter }) {
     }
   }
 
+  async function processMessageForModeration(msg, { isEdit = false } = {}) {
+    if (!msg?.server || !msg.authorId) {
+      return;
+    }
+
+    if (msg.author?.bot || msg.authorId === client.user?.id) {
+      return;
+    }
+
+    const runtime = getRuntimeSettings();
+
+    if (runtime.moderationChannelId && msg.channelId === runtime.moderationChannelId && !isEdit) {
+      const handled = await handleModCommand(msg);
+      if (handled) {
+        return;
+      }
+    }
+
+    const settings = runtime;
+    if (settings.excludedChannelIds.includes(msg.channelId)) {
+      return;
+    }
+
+    const createdAt = msg.createdAt ? msg.createdAt.toISOString() : new Date().toISOString();
+    const editedAt = msg.editedAt ? msg.editedAt.toISOString() : (isEdit ? new Date().toISOString() : null);
+
+    const messagePayload = {
+      discordMessageId: msg.id,
+      guildId: msg.server.id,
+      guildName: msg.server.name || msg.server.displayName || msg.server.id,
+      channelId: msg.channelId,
+      channelName: msg.channel?.displayName || msg.channel?.name || "unknown",
+      userId: msg.authorId,
+      username: msg.author?.username || "unknown",
+      displayName: msg.member?.displayName || msg.author?.displayName || msg.author?.username || "unknown",
+      content: msg.content || "",
+      createdAt,
+      editedAt
+    };
+
+    try {
+      db.insertRecentContext({
+        guildId: messagePayload.guildId,
+        userId: messagePayload.userId,
+        discordMessageId: messagePayload.discordMessageId,
+        content: messagePayload.content,
+        createdAt: messagePayload.editedAt || messagePayload.createdAt
+      });
+      db.trimRecentContext();
+
+      const userStats = db.getUserStats(messagePayload.guildId, messagePayload.userId);
+      const recentMessages = db.getRecentMessagesForUser(
+        messagePayload.guildId,
+        messagePayload.userId,
+        settings.recentContextMessages
+      );
+
+      const decision = await moderateMessage({
+        puter,
+        model: settings.aiProvider === "ollama" ? settings.ollamaModel : settings.puterModel,
+        temperature: settings.puterTemperature,
+        rules: settings.rules,
+        message: messagePayload,
+        userStats,
+        recentMessages,
+        settings,
+        allowedByCap: (action, cap) => db.allowedByCap(action, cap)
+      });
+
+      const messageRowId = db.insertMessage({
+        ...messagePayload,
+        flagged: decision.flagged,
+        flagReason: decision.reason,
+        aiConfidence: decision.confidence,
+        aiRecommendedAction: decision.recommendedAction,
+        aiSummary: decision.summary,
+        aiRationale: decision.rationale,
+        aiRawJson: decision.rawJson
+      });
+
+      const existingPending = db.getPendingFlagByMessageId(messagePayload.discordMessageId);
+
+      if (!decision.flagged) {
+        if (isEdit && existingPending) {
+          db.updateFlagStatus(
+            existingPending.id,
+            "dismissed",
+            "none",
+            null,
+            "Message was edited and no longer appears to violate rules."
+          );
+        }
+        return;
+      }
+
+      let flagId = null;
+      if (existingPending) {
+        db.updatePendingFlagDecision(existingPending.id, {
+          reason: decision.reason,
+          severity: decision.severity,
+          confidence: decision.confidence,
+          recommendedAction: decision.recommendedAction,
+          rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
+        });
+        flagId = existingPending.id;
+      } else {
+        flagId = db.createFlag({
+          messageRowId,
+          discordMessageId: messagePayload.discordMessageId,
+          guildId: messagePayload.guildId,
+          channelId: messagePayload.channelId,
+          userId: messagePayload.userId,
+          reason: decision.reason,
+          severity: decision.severity,
+          confidence: decision.confidence,
+          recommendedAction: decision.recommendedAction,
+          rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
+        });
+      }
+
+      let autoApplied = false;
+      let actionResult = null;
+
+      if (settings.autoModeration && settings.allowedActions.includes(decision.recommendedAction) && decision.recommendedAction !== "none") {
+        try {
+          const flag = db.getFlagById(flagId);
+          actionResult = await resolveFlagWithCommand(
+            flag,
+            "approve",
+            null,
+            isEdit ? "Auto-moderation action after message edit" : "Auto-moderation action"
+          );
+          autoApplied = true;
+        } catch (error) {
+          db.updateFlagStatus(flagId, "pending", null, null, `Auto-action failed: ${error.message}`);
+        }
+      }
+
+      if (!settings.moderationChannelId) {
+        throw new Error("No moderation channel configured. Set moderationChannelId in dashboard settings.");
+      }
+
+      if (!existingPending) {
+        const moderationChannel = await fetchChannel(client, settings.moderationChannelId);
+        const posted = await moderationChannel.sendMessage(
+          createFlagLogText({
+            flagId,
+            message: messagePayload,
+            decision,
+            userStats,
+            autoApplied,
+            actionResult
+          })
+        );
+
+        db.setFlagModerationMessage(flagId, posted.id);
+
+        await posted.react(REACTION_APPROVE).catch(() => {});
+        await posted.react(REACTION_DISMISS).catch(() => {});
+        await posted.react(REACTION_ESCALATE).catch(() => {});
+      }
+    } catch (error) {
+      console.error("Message moderation failed:", error);
+      db.insertMessage({
+        ...messagePayload,
+        flagged: false,
+        flagReason: null,
+        aiConfidence: null,
+        aiRecommendedAction: null,
+        aiSummary: "Moderation failed before decision.",
+        aiRationale: `AI error: ${error.message}`,
+        aiRawJson: null
+      });
+    }
+  }
+
   return {
     get client() {
       return client;
@@ -604,149 +866,16 @@ function createStoatBot({ config, db, puter }) {
       });
 
       client.on("messageCreate", async (msg) => {
-        if (!msg.server || !msg.authorId) {
+        await processMessageForModeration(msg, { isEdit: false });
+      });
+
+      client.on("messageUpdate", async (oldMessage, newMessage) => {
+        const candidate = newMessage?.id ? newMessage : oldMessage;
+        if (!candidate?.id) {
           return;
         }
 
-        if (msg.author?.bot || msg.authorId === client.user?.id) {
-          return;
-        }
-
-        const runtime = getRuntimeSettings();
-
-        if (runtime.moderationChannelId && msg.channelId === runtime.moderationChannelId) {
-          const handled = await handleModCommand(msg);
-          if (handled) {
-            return;
-          }
-        }
-
-        const settings = runtime;
-        if (settings.excludedChannelIds.includes(msg.channelId)) {
-          return;
-        }
-
-        const messagePayload = {
-          discordMessageId: msg.id,
-          guildId: msg.server.id,
-          channelId: msg.channelId,
-          channelName: msg.channel?.displayName || msg.channel?.name || "unknown",
-          userId: msg.authorId,
-          username: msg.author?.username || "unknown",
-          displayName: msg.member?.displayName || msg.author?.displayName || msg.author?.username || "unknown",
-          content: msg.content || "",
-          createdAt: msg.createdAt.toISOString()
-        };
-
-        try {
-          db.insertRecentContext({
-            guildId: messagePayload.guildId,
-            userId: messagePayload.userId,
-            discordMessageId: messagePayload.discordMessageId,
-            content: messagePayload.content,
-            createdAt: messagePayload.createdAt
-          });
-          db.trimRecentContext();
-
-          const userStats = db.getUserStats(messagePayload.guildId, messagePayload.userId);
-          const recentMessages = db.getRecentMessagesForUser(
-            messagePayload.guildId,
-            messagePayload.userId,
-            settings.recentContextMessages
-          );
-
-          const decision = await moderateMessage({
-            puter,
-            model: settings.puterModel,
-            temperature: settings.puterTemperature,
-            rules: settings.rules,
-            message: messagePayload,
-            userStats,
-            recentMessages,
-            settings,
-            allowedByCap: (action, cap) => db.allowedByCap(action, cap)
-          });
-
-          const messageRowId = db.insertMessage({
-            ...messagePayload,
-            flagged: decision.flagged,
-            flagReason: decision.reason,
-            aiConfidence: decision.confidence,
-            aiRecommendedAction: decision.recommendedAction,
-            aiSummary: decision.summary,
-            aiRationale: decision.rationale,
-            aiRawJson: decision.rawJson
-          });
-
-          if (!decision.flagged) {
-            return;
-          }
-
-          const flagId = db.createFlag({
-            messageRowId,
-            discordMessageId: messagePayload.discordMessageId,
-            guildId: messagePayload.guildId,
-            channelId: messagePayload.channelId,
-            userId: messagePayload.userId,
-            reason: decision.reason,
-            severity: decision.severity,
-            confidence: decision.confidence,
-            recommendedAction: decision.recommendedAction,
-            rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
-          });
-
-          let autoApplied = false;
-          let actionResult = null;
-
-          if (settings.autoModeration && settings.allowedActions.includes(decision.recommendedAction) && decision.recommendedAction !== "none") {
-            try {
-              const flag = db.getFlagById(flagId);
-              actionResult = await resolveFlagWithCommand(
-                flag,
-                "approve",
-                null,
-                "Auto-moderation action"
-              );
-              autoApplied = true;
-            } catch (error) {
-              db.updateFlagStatus(flagId, "pending", null, null, `Auto-action failed: ${error.message}`);
-            }
-          }
-
-          if (!settings.moderationChannelId) {
-            throw new Error("No moderation channel configured. Set moderationChannelId in dashboard settings.");
-          }
-
-          const moderationChannel = await fetchChannel(client, settings.moderationChannelId);
-          const posted = await moderationChannel.sendMessage(
-            createFlagLogText({
-              flagId,
-              message: messagePayload,
-              decision,
-              userStats,
-              autoApplied,
-              actionResult
-            })
-          );
-
-          db.setFlagModerationMessage(flagId, posted.id);
-
-          await posted.react(REACTION_APPROVE).catch(() => {});
-          await posted.react(REACTION_DISMISS).catch(() => {});
-          await posted.react(REACTION_ESCALATE).catch(() => {});
-        } catch (error) {
-          console.error("Message moderation failed:", error);
-          db.insertMessage({
-            ...messagePayload,
-            flagged: false,
-            flagReason: null,
-            aiConfidence: null,
-            aiRecommendedAction: null,
-            aiSummary: "Moderation failed before decision.",
-            aiRationale: `AI error: ${error.message}`,
-            aiRawJson: null
-          });
-        }
+        await processMessageForModeration(candidate, { isEdit: true });
       });
 
       const runtime = getRuntimeSettings();

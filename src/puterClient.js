@@ -1,4 +1,5 @@
 const DEFAULT_PUTER_API_ORIGIN = process.env.PUTER_API_ORIGIN || "https://api.puter.com";
+const DEFAULT_OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 
 function pickFirstString(candidates) {
   for (const item of candidates) {
@@ -85,6 +86,29 @@ function normalizeChatResult(rawResult) {
   };
 }
 
+function normalizeOllamaChatResult(rawResult) {
+  const content = pickFirstString([
+    rawResult?.message?.content,
+    rawResult?.response,
+    rawResult?.text,
+    typeof rawResult === "string" ? rawResult : ""
+  ]);
+
+  return {
+    ...rawResult,
+    message: {
+      ...(rawResult?.message || {}),
+      content
+    },
+    toString() {
+      return content;
+    },
+    valueOf() {
+      return content;
+    }
+  };
+}
+
 async function callPuterDriver({ authToken, apiOrigin, iface, service, method, args }) {
   const response = await fetch(`${apiOrigin}/drivers/call`, {
     method: "POST",
@@ -150,6 +174,81 @@ function createPuterClient(authToken) {
   };
 }
 
+async function callOllamaChat({ baseUrl, model, messages, options }) {
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: false,
+      options: {
+        ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
+        ...(options?.max_tokens !== undefined ? { num_predict: options.max_tokens } : {})
+      }
+    })
+  });
+
+  const textBody = await response.text();
+  if (!response.ok) {
+    throw new Error(`Ollama request failed (${response.status}): ${textBody.slice(0, 300)}`);
+  }
+
+  try {
+    return JSON.parse(textBody);
+  } catch {
+    return textBody;
+  }
+}
+
+function createOllamaClient({ baseUrl, model }) {
+  const safeBaseUrl = (baseUrl || DEFAULT_OLLAMA_BASE_URL).trim();
+  const safeModel = (model || "llama3.1:8b-instruct").trim();
+
+  if (!safeBaseUrl) {
+    throw new Error("Missing Ollama base URL");
+  }
+
+  if (!safeModel) {
+    throw new Error("Missing Ollama model");
+  }
+
+  return {
+    ai: {
+      async chat(messages, options = {}) {
+        const normalizedMessages = Array.isArray(messages)
+          ? messages
+          : [{ role: "user", content: String(messages || "") }];
+
+        const rawResult = await callOllamaChat({
+          baseUrl: safeBaseUrl,
+          model: options?.model || safeModel,
+          messages: normalizedMessages,
+          options
+        });
+
+        return normalizeOllamaChatResult(rawResult);
+      }
+    }
+  };
+}
+
+function createAiClient(settings = {}) {
+  const provider = settings.aiProvider === "ollama" ? "ollama" : "puter";
+
+  if (provider === "ollama") {
+    return createOllamaClient({
+      baseUrl: settings.ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL,
+      model: settings.ollamaModel || "llama3.1:8b-instruct"
+    });
+  }
+
+  return createPuterClient(settings.puterAuthToken);
+}
+
 module.exports = {
-  createPuterClient
+  createPuterClient,
+  createAiClient
 };

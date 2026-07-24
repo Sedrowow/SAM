@@ -74,6 +74,35 @@ function escapeAttr(text) {
   return escapeHtml(text).replace(/"/g, "&quot;");
 }
 
+function selectedServerId() {
+  const value = qs("serverFilter")?.value || "all";
+  return value && value !== "all" ? value : "";
+}
+
+function applyProviderUi(provider) {
+  const isOllama = provider === "ollama";
+  qs("puterAuthToken").disabled = isOllama;
+  qs("puterModel").disabled = isOllama;
+  qs("ollamaBaseUrl").disabled = !isOllama;
+  qs("ollamaModel").disabled = !isOllama;
+}
+
+async function loadServers() {
+  const { servers } = await api("/api/servers?limit=500");
+  const select = qs("serverFilter");
+  const previous = select.value || "all";
+
+  const options = ["<option value=\"all\">All servers</option>"];
+  for (const row of servers || []) {
+    const name = row.guildName || row.guildId;
+    const suffix = row.messageCount ? ` (${row.messageCount})` : "";
+    options.push(`<option value="${escapeAttr(row.guildId)}">${escapeHtml(name)}${escapeHtml(suffix)}</option>`);
+  }
+
+  select.innerHTML = options.join("");
+  select.value = Array.from(select.options).some((opt) => opt.value === previous) ? previous : "all";
+}
+
 function compactCell(value, maxLen = 120) {
   if (value === null || value === undefined) {
     return "";
@@ -146,11 +175,13 @@ async function loadStats() {
 async function loadMessages() {
   const flagged = qs("flaggedFilter").value;
   const reason = qs("reasonFilter").value.trim();
+  const serverId = selectedServerId();
   const limit = Number(qs("limitFilter").value || 250);
 
   const params = new URLSearchParams();
   if (flagged !== "all") params.set("flagged", flagged);
   if (reason) params.set("reason", reason);
+  if (serverId) params.set("serverId", serverId);
   params.set("limit", String(limit));
 
   const { messages } = await api(`/api/messages?${params.toString()}`);
@@ -162,7 +193,7 @@ async function loadMessages() {
     tr.innerHTML = `
       <td>${humanDate(row.createdAt)}</td>
       <td><code>${escapeHtml(row.displayName || row.username)}</code><br/><code>${escapeHtml(row.userId)}</code></td>
-      <td><code>${escapeHtml(row.channelName || row.channelId)}</code></td>
+      <td><code>${escapeHtml(row.guildName || row.guildId || "unknown")}</code><br/><code>${escapeHtml(row.channelName || row.channelId)}</code></td>
       <td class="message-cell">${escapeHtml(row.content || "")}</td>
       <td>${row.flagged ? severityBadge(row.flagReason, true) : "-"}</td>
       <td>${severityBadge(row.aiRecommendedAction || "none", false)}</td>
@@ -252,7 +283,11 @@ async function loadFlags() {
 }
 
 async function loadUsers() {
-  const { users } = await api("/api/users?limit=500");
+  const serverId = selectedServerId();
+  const usersPath = serverId
+    ? `/api/users?limit=500&serverId=${encodeURIComponent(serverId)}`
+    : "/api/users?limit=500";
+  const { users } = await api(usersPath);
   const body = qs("usersBody");
   body.innerHTML = "";
 
@@ -282,6 +317,7 @@ async function loadUsers() {
       <td>${escapeHtml(String(row.flaggedMessages || 0))}</td>
       <td>${severityBadge(row.topReason || "none", Boolean(row.topReason && row.topReason !== "none"))}</td>
       <td>${escapeHtml(`w:${row.warns || 0} t:${row.timeouts || 0} k:${row.kicks || 0} b:${row.bans || 0}`)}</td>
+      <td>${escapeHtml(String(row.serverCount || 0))}</td>
       <td class="ai-cell">${escapeHtml(behaviourSummary(row))}</td>
       <td>${severityBadge(strictness, strictness === "strict")}</td>
       <td>${escapeHtml(humanDate(row.lastMessageAt || row.lastFlagAt || ""))}</td>
@@ -298,9 +334,12 @@ async function loadSettings() {
   qs("stoatBotToken").value = "";
   qs("stoatBotToken").placeholder = settings.stoatBotToken ? "Saved (hidden). Enter to replace." : "Not set";
   qs("moderationChannelId").value = settings.moderationChannelId || "";
+  qs("aiProvider").value = settings.aiProvider || "puter";
   qs("puterAuthToken").value = "";
   qs("puterAuthToken").placeholder = settings.puterAuthToken ? "Saved (hidden). Enter to replace." : "Not set";
   qs("puterModel").value = settings.puterModel || "meta-llama/llama-3.1-8b-instruct";
+  qs("ollamaBaseUrl").value = settings.ollamaBaseUrl || "http://127.0.0.1:11434";
+  qs("ollamaModel").value = settings.ollamaModel || "llama3.1:8b-instruct";
   qs("puterTemperature").value = String(settings.puterTemperature ?? 0.1);
   qs("recentContextMessages").value = String(settings.recentContextMessages || 12);
 
@@ -320,6 +359,8 @@ async function loadSettings() {
   checks.forEach((el) => {
     el.checked = (settings.allowedActions || []).includes(el.value);
   });
+
+  applyProviderUi(settings.aiProvider || "puter");
 }
 
 async function saveSettings() {
@@ -340,8 +381,11 @@ async function saveSettings() {
   const payload = {
     stoatBotToken: qs("stoatBotToken").value.trim() || undefined,
     moderationChannelId: qs("moderationChannelId").value.trim(),
+    aiProvider: qs("aiProvider").value,
     puterAuthToken: qs("puterAuthToken").value.trim() || undefined,
     puterModel: qs("puterModel").value.trim(),
+    ollamaBaseUrl: qs("ollamaBaseUrl").value.trim(),
+    ollamaModel: qs("ollamaModel").value.trim(),
     puterTemperature: Number(qs("puterTemperature").value || 0.1),
     recentContextMessages: Number(qs("recentContextMessages").value || 12),
     autoModeration: qs("autoModeration").checked,
@@ -369,6 +413,7 @@ async function saveSettings() {
 }
 
 async function refreshAll() {
+  await loadServers();
   await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers(), loadSettings(), loadRawDbViewer()]);
 }
 
@@ -454,10 +499,14 @@ async function loadRawDbViewer() {
 
 qs("refreshBtn").addEventListener("click", refreshAll);
 qs("applyFiltersBtn").addEventListener("click", loadMessages);
+qs("serverFilter").addEventListener("change", async () => {
+  await Promise.all([loadMessages(), loadUsers()]);
+});
 qs("saveSettingsBtn").addEventListener("click", saveSettings);
 qs("dbDeleteUserMessagesBtn").addEventListener("click", deleteMessagesFromDbForm);
 qs("rawDbRefreshBtn").addEventListener("click", loadRawDbViewer);
 qs("rawDbMode").addEventListener("change", loadRawDbViewer);
+qs("aiProvider").addEventListener("change", () => applyProviderUi(qs("aiProvider").value));
 
 setupTabs();
 

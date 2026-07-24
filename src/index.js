@@ -1,11 +1,19 @@
 const { config } = require("./config");
 const { createDatabase } = require("./db");
-const { createPuterClient } = require("./puterClient");
+const { createAiClient } = require("./puterClient");
 const { createStoatBot } = require("./stoatBot");
 const { createDashboard } = require("./dashboard");
 
 function hasRequiredBotSettings(settings) {
-  return Boolean(settings.stoatBotToken && settings.moderationChannelId && settings.puterAuthToken);
+  if (!settings.stoatBotToken || !settings.moderationChannelId) {
+    return false;
+  }
+
+  if (settings.aiProvider === "ollama") {
+    return Boolean(settings.ollamaModel && settings.ollamaBaseUrl);
+  }
+
+  return Boolean(settings.puterAuthToken);
 }
 
 async function main() {
@@ -17,11 +25,19 @@ async function main() {
     const settings = db.getSettings();
 
     if (!hasRequiredBotSettings(settings)) {
-      const missing = [
+      const required = [
         ["stoatBotToken", settings.stoatBotToken],
-        ["moderationChannelId", settings.moderationChannelId],
-        ["puterAuthToken", settings.puterAuthToken]
-      ]
+        ["moderationChannelId", settings.moderationChannelId]
+      ];
+
+      if (settings.aiProvider === "ollama") {
+        required.push(["ollamaBaseUrl", settings.ollamaBaseUrl]);
+        required.push(["ollamaModel", settings.ollamaModel]);
+      } else {
+        required.push(["puterAuthToken", settings.puterAuthToken]);
+      }
+
+      const missing = required
         .filter(([, value]) => !value)
         .map(([name]) => name);
 
@@ -31,8 +47,8 @@ async function main() {
       return false;
     }
 
-    const puter = createPuterClient(settings.puterAuthToken);
-    bot = createStoatBot({ config, db, puter });
+    const aiClient = createAiClient(settings);
+    bot = createStoatBot({ config, db, puter: aiClient });
     await bot.start();
     return true;
   }
@@ -69,7 +85,11 @@ async function main() {
     onSettingsUpdated: async ({ previous, next }) => {
       const loginSettingsChanged =
         previous.stoatBotToken !== next.stoatBotToken ||
-        previous.puterAuthToken !== next.puterAuthToken;
+        previous.aiProvider !== next.aiProvider ||
+        previous.puterAuthToken !== next.puterAuthToken ||
+        previous.puterModel !== next.puterModel ||
+        previous.ollamaBaseUrl !== next.ollamaBaseUrl ||
+        previous.ollamaModel !== next.ollamaModel;
 
       const botWasConfigured = hasRequiredBotSettings(previous);
       const botNowConfigured = hasRequiredBotSettings(next);

@@ -63,6 +63,7 @@ function createDatabase(dbPath, seedSettings = {}) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       discord_message_id TEXT NOT NULL,
       guild_id TEXT NOT NULL,
+      guild_name TEXT,
       channel_id TEXT NOT NULL,
       channel_name TEXT,
       user_id TEXT NOT NULL,
@@ -70,6 +71,7 @@ function createDatabase(dbPath, seedSettings = {}) {
       display_name TEXT,
       content TEXT,
       created_at TEXT NOT NULL,
+      edited_at TEXT,
       flagged INTEGER NOT NULL DEFAULT 0,
       flag_reason TEXT,
       ai_confidence REAL,
@@ -127,12 +129,17 @@ function createDatabase(dbPath, seedSettings = {}) {
 
   // Backward-compatible schema upgrades.
   ensureColumn(db, "messages", "ai_summary", "TEXT");
+  ensureColumn(db, "messages", "guild_name", "TEXT");
+  ensureColumn(db, "messages", "edited_at", "TEXT");
 
   const defaultSettings = {
     stoatBotToken: "",
     moderationChannelId: "",
+    aiProvider: "puter",
     puterAuthToken: "",
     puterModel: "meta-llama/llama-3.1-8b-instruct",
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    ollamaModel: "llama3.1:8b-instruct",
     puterTemperature: 0.1,
     recentContextMessages: 12,
     autoModeration: false,
@@ -173,10 +180,17 @@ function createDatabase(dbPath, seedSettings = {}) {
       return {
         stoatBotToken: typeof raw.stoatBotToken === "string" ? raw.stoatBotToken : "",
         moderationChannelId: typeof raw.moderationChannelId === "string" ? raw.moderationChannelId : "",
+        aiProvider: raw.aiProvider === "ollama" ? "ollama" : "puter",
         puterAuthToken: typeof raw.puterAuthToken === "string" ? raw.puterAuthToken : "",
         puterModel: typeof raw.puterModel === "string" && raw.puterModel
           ? raw.puterModel
           : "meta-llama/llama-3.1-8b-instruct",
+        ollamaBaseUrl: typeof raw.ollamaBaseUrl === "string" && raw.ollamaBaseUrl
+          ? raw.ollamaBaseUrl
+          : "http://127.0.0.1:11434",
+        ollamaModel: typeof raw.ollamaModel === "string" && raw.ollamaModel
+          ? raw.ollamaModel
+          : "llama3.1:8b-instruct",
         puterTemperature: Number.isFinite(Number(raw.puterTemperature))
           ? Number(raw.puterTemperature)
           : 0.1,
@@ -208,17 +222,34 @@ function createDatabase(dbPath, seedSettings = {}) {
     },
 
     insertMessage(payload) {
-      const stmt = db.prepare(`
-        INSERT OR REPLACE INTO messages (
-          discord_message_id, guild_id, channel_id, channel_name, user_id,
-          username, display_name, content, created_at,
+      db.prepare(`
+        INSERT INTO messages (
+          discord_message_id, guild_id, guild_name, channel_id, channel_name, user_id,
+          username, display_name, content, created_at, edited_at,
           flagged, flag_reason, ai_confidence, ai_recommended_action, ai_summary, ai_rationale, ai_raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      const result = stmt.run(
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(discord_message_id) DO UPDATE SET
+          guild_id = excluded.guild_id,
+          guild_name = excluded.guild_name,
+          channel_id = excluded.channel_id,
+          channel_name = excluded.channel_name,
+          user_id = excluded.user_id,
+          username = excluded.username,
+          display_name = excluded.display_name,
+          content = excluded.content,
+          created_at = excluded.created_at,
+          edited_at = excluded.edited_at,
+          flagged = excluded.flagged,
+          flag_reason = excluded.flag_reason,
+          ai_confidence = excluded.ai_confidence,
+          ai_recommended_action = excluded.ai_recommended_action,
+          ai_summary = excluded.ai_summary,
+          ai_rationale = excluded.ai_rationale,
+          ai_raw_json = excluded.ai_raw_json
+      `).run(
         payload.discordMessageId,
         payload.guildId,
+        payload.guildName,
         payload.channelId,
         payload.channelName,
         payload.userId,
@@ -226,6 +257,7 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.displayName,
         payload.content,
         payload.createdAt,
+        payload.editedAt || null,
         payload.flagged ? 1 : 0,
         payload.flagReason || null,
         payload.aiConfidence ?? null,
@@ -235,7 +267,8 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.aiRawJson ?? null
       );
 
-      return result.lastInsertRowid;
+      const row = db.prepare("SELECT id FROM messages WHERE discord_message_id = ?").get(payload.discordMessageId);
+      return row?.id || null;
     },
 
     insertRecentContext(payload) {
@@ -370,6 +403,39 @@ function createDatabase(dbPath, seedSettings = {}) {
       `).get(moderationMessageId);
     },
 
+    getPendingFlagByMessageId(discordMessageId) {
+      return db.prepare(`
+        SELECT f.*, m.content, m.username, m.display_name, m.channel_name
+        FROM flags f
+        JOIN messages m ON m.id = f.message_row_id
+        WHERE f.discord_message_id = ?
+          AND f.status = 'pending'
+        ORDER BY f.created_at DESC
+        LIMIT 1
+      `).get(discordMessageId);
+    },
+
+    updatePendingFlagDecision(flagId, payload) {
+      db.prepare(`
+        UPDATE flags
+        SET reason = ?,
+            severity = ?,
+            confidence = ?,
+            recommended_action = ?,
+            rationale = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(
+        payload.reason,
+        payload.severity,
+        payload.confidence,
+        payload.recommendedAction,
+        payload.rationale,
+        new Date().toISOString(),
+        flagId
+      );
+    },
+
     getMessages(filter = {}) {
       const clauses = [];
       const params = [];
@@ -396,9 +462,10 @@ function createDatabase(dbPath, seedSettings = {}) {
 
       return db.prepare(`
         SELECT id, discord_message_id AS discordMessageId, guild_id AS guildId,
+           guild_name AS guildName,
                channel_id AS channelId, channel_name AS channelName,
                user_id AS userId, username, display_name AS displayName,
-               content, created_at AS createdAt, flagged,
+           content, created_at AS createdAt, edited_at AS editedAt, flagged,
                flag_reason AS flagReason, ai_confidence AS aiConfidence,
                ai_recommended_action AS aiRecommendedAction, ai_summary AS aiSummary,
                ai_rationale AS aiRationale
@@ -466,36 +533,146 @@ function createDatabase(dbPath, seedSettings = {}) {
       };
     },
 
-    getUsersOverview(limit = 250) {
+    getServers(limit = 200) {
+      const safeLimit = Math.min(Math.max(Number(limit || 200), 1), 1000);
+      return db.prepare(`
+        SELECT
+          m.guild_id AS guildId,
+          COALESCE(MAX(NULLIF(m.guild_name, '')), m.guild_id) AS guildName,
+          COUNT(*) AS messageCount,
+          COALESCE((
+            SELECT COUNT(*)
+            FROM flags f
+            WHERE f.guild_id = m.guild_id
+          ), 0) AS flagCount,
+          MAX(m.created_at) AS lastMessageAt
+        FROM messages m
+        GROUP BY m.guild_id
+        ORDER BY messageCount DESC, guildName ASC
+        LIMIT ?
+      `).all(safeLimit);
+    },
+
+    getUsersOverview(limit = 250, serverId = null) {
       const safeLimit = Math.min(Math.max(Number(limit || 250), 1), 2000);
+
+      if (serverId) {
+        return db.prepare(`
+          WITH user_base AS (
+            SELECT user_id FROM messages WHERE guild_id = ?
+            UNION
+            SELECT user_id FROM users WHERE guild_id = ?
+          ),
+          msg_agg AS (
+            SELECT user_id,
+                   COUNT(*) AS totalMessages,
+                   SUM(CASE WHEN flagged = 1 THEN 1 ELSE 0 END) AS flaggedMessages,
+                   MAX(created_at) AS lastMessageAt,
+                   COALESCE(MAX(display_name), MAX(username), user_id) AS displayName,
+                   MAX(username) AS username
+            FROM messages
+            WHERE guild_id = ?
+            GROUP BY user_id
+          ),
+          flag_agg AS (
+            SELECT user_id,
+                   SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pendingFlags,
+                   SUM(CASE WHEN status = 'acted' THEN 1 ELSE 0 END) AS actedFlags,
+                   SUM(CASE WHEN status = 'dismissed' THEN 1 ELSE 0 END) AS dismissedFlags,
+                   MAX(updated_at) AS lastFlagAt
+            FROM flags
+            WHERE guild_id = ?
+            GROUP BY user_id
+          ),
+          enforcement AS (
+            SELECT user_id,
+                   SUM(warns) AS warns,
+                   SUM(timeouts) AS timeouts,
+                   SUM(kicks) AS kicks,
+                   SUM(bans) AS bans
+            FROM users
+            WHERE guild_id = ?
+            GROUP BY user_id
+          )
+          SELECT
+            ? AS guildId,
+            ub.user_id AS userId,
+            COALESCE(ma.displayName, ub.user_id) AS displayName,
+            COALESCE(ma.username, ub.user_id) AS username,
+            COALESCE(ma.totalMessages, 0) AS totalMessages,
+            COALESCE(ma.flaggedMessages, 0) AS flaggedMessages,
+            COALESCE(fa.pendingFlags, 0) AS pendingFlags,
+            COALESCE(fa.actedFlags, 0) AS actedFlags,
+            COALESCE(fa.dismissedFlags, 0) AS dismissedFlags,
+            COALESCE(e.warns, 0) AS warns,
+            COALESCE(e.timeouts, 0) AS timeouts,
+            COALESCE(e.kicks, 0) AS kicks,
+            COALESCE(e.bans, 0) AS bans,
+            ma.lastMessageAt,
+            fa.lastFlagAt,
+            (
+              SELECT m2.flag_reason
+              FROM messages m2
+              WHERE m2.guild_id = ?
+                AND m2.user_id = ub.user_id
+                AND m2.flagged = 1
+                AND m2.flag_reason IS NOT NULL
+              GROUP BY m2.flag_reason
+              ORDER BY COUNT(*) DESC, m2.flag_reason ASC
+              LIMIT 1
+            ) AS topReason,
+            1 AS serverCount,
+            ? AS serversSeen
+          FROM user_base ub
+          LEFT JOIN msg_agg ma ON ma.user_id = ub.user_id
+          LEFT JOIN flag_agg fa ON fa.user_id = ub.user_id
+          LEFT JOIN enforcement e ON e.user_id = ub.user_id
+          ORDER BY COALESCE(ma.flaggedMessages, 0) DESC,
+                   COALESCE(fa.pendingFlags, 0) DESC,
+                   COALESCE(ma.totalMessages, 0) DESC,
+                   ub.user_id ASC
+          LIMIT ?
+        `).all(serverId, serverId, serverId, serverId, serverId, serverId, serverId, serverId, safeLimit);
+      }
 
       return db.prepare(`
         WITH user_base AS (
-          SELECT guild_id, user_id FROM messages
+          SELECT user_id FROM messages
           UNION
-          SELECT guild_id, user_id FROM users
+          SELECT user_id FROM users
         ),
         msg_agg AS (
-          SELECT guild_id, user_id,
+          SELECT user_id,
                  COUNT(*) AS totalMessages,
                  SUM(CASE WHEN flagged = 1 THEN 1 ELSE 0 END) AS flaggedMessages,
                  MAX(created_at) AS lastMessageAt,
+                 COUNT(DISTINCT guild_id) AS serverCount,
+                 GROUP_CONCAT(DISTINCT guild_id) AS serversSeen,
                  COALESCE(MAX(display_name), MAX(username), user_id) AS displayName,
                  MAX(username) AS username
           FROM messages
-          GROUP BY guild_id, user_id
+          GROUP BY user_id
         ),
         flag_agg AS (
-          SELECT guild_id, user_id,
+          SELECT user_id,
                  SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pendingFlags,
                  SUM(CASE WHEN status = 'acted' THEN 1 ELSE 0 END) AS actedFlags,
                  SUM(CASE WHEN status = 'dismissed' THEN 1 ELSE 0 END) AS dismissedFlags,
                  MAX(updated_at) AS lastFlagAt
           FROM flags
-          GROUP BY guild_id, user_id
+          GROUP BY user_id
+        ),
+        enforcement AS (
+          SELECT user_id,
+                 SUM(warns) AS warns,
+                 SUM(timeouts) AS timeouts,
+                 SUM(kicks) AS kicks,
+                 SUM(bans) AS bans
+          FROM users
+          GROUP BY user_id
         )
         SELECT
-          ub.guild_id AS guildId,
+          NULL AS guildId,
           ub.user_id AS userId,
           COALESCE(ma.displayName, ub.user_id) AS displayName,
           COALESCE(ma.username, ub.user_id) AS username,
@@ -504,27 +681,28 @@ function createDatabase(dbPath, seedSettings = {}) {
           COALESCE(fa.pendingFlags, 0) AS pendingFlags,
           COALESCE(fa.actedFlags, 0) AS actedFlags,
           COALESCE(fa.dismissedFlags, 0) AS dismissedFlags,
-          COALESCE(u.warns, 0) AS warns,
-          COALESCE(u.timeouts, 0) AS timeouts,
-          COALESCE(u.kicks, 0) AS kicks,
-          COALESCE(u.bans, 0) AS bans,
+          COALESCE(e.warns, 0) AS warns,
+          COALESCE(e.timeouts, 0) AS timeouts,
+          COALESCE(e.kicks, 0) AS kicks,
+          COALESCE(e.bans, 0) AS bans,
           ma.lastMessageAt,
           fa.lastFlagAt,
           (
             SELECT m2.flag_reason
             FROM messages m2
-            WHERE m2.guild_id = ub.guild_id
-              AND m2.user_id = ub.user_id
+            WHERE m2.user_id = ub.user_id
               AND m2.flagged = 1
               AND m2.flag_reason IS NOT NULL
             GROUP BY m2.flag_reason
             ORDER BY COUNT(*) DESC, m2.flag_reason ASC
             LIMIT 1
-          ) AS topReason
+          ) AS topReason,
+          COALESCE(ma.serverCount, 0) AS serverCount,
+          COALESCE(ma.serversSeen, '') AS serversSeen
         FROM user_base ub
-        LEFT JOIN msg_agg ma ON ma.guild_id = ub.guild_id AND ma.user_id = ub.user_id
-        LEFT JOIN flag_agg fa ON fa.guild_id = ub.guild_id AND fa.user_id = ub.user_id
-        LEFT JOIN users u ON u.guild_id = ub.guild_id AND u.user_id = ub.user_id
+        LEFT JOIN msg_agg ma ON ma.user_id = ub.user_id
+        LEFT JOIN flag_agg fa ON fa.user_id = ub.user_id
+        LEFT JOIN enforcement e ON e.user_id = ub.user_id
         ORDER BY COALESCE(ma.flaggedMessages, 0) DESC,
                  COALESCE(fa.pendingFlags, 0) DESC,
                  COALESCE(ma.totalMessages, 0) DESC,

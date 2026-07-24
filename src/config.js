@@ -27,8 +27,11 @@ const config = {
   envDefaults: {
     stoatBotToken: process.env.STOAT_BOT_TOKEN || "",
     moderationChannelId: process.env.STOAT_MODERATION_CHANNEL_ID || "",
+    aiProvider: process.env.AI_PROVIDER === "ollama" ? "ollama" : "puter",
     puterAuthToken: process.env.PUTER_AUTH_TOKEN || "",
     puterModel: process.env.PUTER_MODEL || "meta-llama/llama-3.1-8b-instruct",
+    ollamaBaseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
+    ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b-instruct",
     puterTemperature: Number(process.env.PUTER_TEMPERATURE || 0.1),
     autoModeration: parseBoolean(process.env.AUTO_MODERATION, false),
     allowedActions,
@@ -46,8 +49,11 @@ const config = {
   stoatBotToken: process.env.STOAT_BOT_TOKEN,
   moderationChannelId: process.env.STOAT_MODERATION_CHANNEL_ID,
 
+  aiProvider: process.env.AI_PROVIDER === "ollama" ? "ollama" : "puter",
   puterAuthToken: process.env.PUTER_AUTH_TOKEN,
   puterModel: process.env.PUTER_MODEL || "meta-llama/llama-3.1-8b-instruct",
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
+  ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b-instruct",
   puterTemperature: Number(process.env.PUTER_TEMPERATURE || 0.1),
 
   autoModeration: parseBoolean(process.env.AUTO_MODERATION, false),

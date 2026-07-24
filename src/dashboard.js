@@ -58,6 +58,11 @@ function createDashboard({ config, db, onActionRequested, onSettingsUpdated }) {
     res.json({ messages });
   });
 
+  app.get("/api/servers", (req, res) => {
+    const servers = db.getServers(req.query.limit || 250);
+    res.json({ servers });
+  });
+
   app.get("/api/flags", (req, res) => {
     const flags = db.getFlags({
       status: req.query.status || undefined,
@@ -68,7 +73,7 @@ function createDashboard({ config, db, onActionRequested, onSettingsUpdated }) {
   });
 
   app.get("/api/users", (req, res) => {
-    const users = db.getUsersOverview(req.query.limit || 250);
+    const users = db.getUsersOverview(req.query.limit || 250, req.query.serverId || null);
     res.json({ users });
   });
 
@@ -116,8 +121,11 @@ function createDashboard({ config, db, onActionRequested, onSettingsUpdated }) {
     const next = {
       stoatBotToken: providedSecret(body.stoatBotToken, current.stoatBotToken),
       moderationChannelId: providedString(body.moderationChannelId, current.moderationChannelId),
+      aiProvider: body.aiProvider === "ollama" ? "ollama" : "puter",
       puterAuthToken: providedSecret(body.puterAuthToken, current.puterAuthToken),
       puterModel: providedString(body.puterModel, current.puterModel),
+      ollamaBaseUrl: providedString(body.ollamaBaseUrl, current.ollamaBaseUrl),
+      ollamaModel: providedString(body.ollamaModel, current.ollamaModel),
       puterTemperature: providedNumber(body.puterTemperature, current.puterTemperature),
       recentContextMessages: providedNumber(body.recentContextMessages, current.recentContextMessages, 1),
       autoModeration: typeof body.autoModeration === "boolean" ? body.autoModeration : current.autoModeration,
