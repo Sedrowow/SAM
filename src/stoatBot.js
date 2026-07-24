@@ -138,6 +138,127 @@ function fallbackDmText({ action, reason }) {
   ].join("\n\n");
 }
 
+function flattenContentParts(value) {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+
+  const text = value
+    .map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      if (typeof part?.text === "string") {
+        return part.text;
+      }
+      if (typeof part?.content === "string") {
+        return part.content;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  return text;
+}
+
+function looksLikeJsonEnvelope(text) {
+  const sample = String(text || "").trim();
+  return sample.startsWith("{") && /"result"\s*:\s*\{|"message"\s*:\s*\{|"reasoning"\s*:/i.test(sample);
+}
+
+function cleanDmText(text) {
+  const cleaned = String(text || "")
+    .replace(/^```[a-z]*\s*/i, "")
+    .replace(/```$/i, "")
+    .replace(/^\s*\*+\s*/gm, "")
+    .replace(/^\s*[-•]\s*/gm, "")
+    .replace(/^\s*\*\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return compactText(cleaned, 1400);
+}
+
+function extractDraftFromReasoning(reasoning) {
+  const text = String(reasoning || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const draftMatch = text.match(/\bdraft\b\s*[:\-]?\s*([\s\S]*)$/i);
+  if (draftMatch && draftMatch[1]) {
+    return cleanDmText(draftMatch[1]);
+  }
+
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^\*+\s*/, "").trim())
+    .map((line) => line.replace(/^\*?\s*\*?([^*]+)\*?\s*:\s*/i, "$1: "));
+
+  const signalLines = lines.filter((line) =>
+    /what happened|why|behavior|expectation|message|removed|warning|timed out|kicked|banned/i.test(line)
+  );
+
+  return cleanDmText(signalLines.join(" "));
+}
+
+function extractPlainDmFromResponse(response) {
+  const directCandidates = [
+    response?.message?.content,
+    response?.result?.message?.content,
+    response?.data?.message?.content,
+    response?.output_text,
+    response?.result?.output_text,
+    response?.text
+  ];
+
+  for (const candidate of directCandidates) {
+    if (typeof candidate === "string" && candidate.trim() && !looksLikeJsonEnvelope(candidate)) {
+      return cleanDmText(candidate);
+    }
+    const flattened = flattenContentParts(candidate);
+    if (flattened && !looksLikeJsonEnvelope(flattened)) {
+      return cleanDmText(flattened);
+    }
+  }
+
+  const reasoningCandidates = [
+    response?.message?.reasoning,
+    response?.result?.message?.reasoning,
+    response?.data?.message?.reasoning,
+    response?.reasoning
+  ];
+
+  for (const reasoning of reasoningCandidates) {
+    const inferred = extractDraftFromReasoning(reasoning);
+    if (inferred) {
+      return inferred;
+    }
+  }
+
+  if (typeof response === "string") {
+    const raw = response.trim();
+    if (!raw) {
+      return "";
+    }
+    if (looksLikeJsonEnvelope(raw)) {
+      try {
+        const parsed = JSON.parse(raw);
+        return extractPlainDmFromResponse(parsed);
+      } catch {
+        return "";
+      }
+    }
+    return cleanDmText(raw);
+  }
+
+  return "";
+}
+
 async function composeUserModerationDm({ puter, settings, flag, action }) {
   const details = parseFlagRationale(flag.rationale);
   const payload = {
@@ -178,20 +299,13 @@ async function composeUserModerationDm({ puter, settings, flag, action }) {
     }
   );
 
-  const text = String(
-    response?.message?.content?.[0]?.text ||
-    response?.message?.content ||
-    response?.result?.message?.content ||
-    response?.data?.message?.content ||
-    response ||
-    ""
-  ).trim();
+  const text = extractPlainDmFromResponse(response);
 
   if (!text) {
     return fallbackDmText({ action, reason: flag.reason });
   }
 
-  return compactText(text, 1400);
+  return text;
 }
 
 function createStoatBot({ config, db, puter }) {
@@ -307,18 +421,19 @@ function createStoatBot({ config, db, puter }) {
     }
 
     const settings = db.getSettings();
-    let dmText = "";
-    try {
-      dmText = await composeUserModerationDm({
-        puter,
-        settings,
-        flag,
-        action
-      });
-    } catch (error) {
-      dmText = fallbackDmText({ action, reason: flag.reason });
-      console.warn("Failed to compose AI moderation DM:", error.message || error);
-    }
+    const queueDmText = async () => {
+      try {
+        return await composeUserModerationDm({
+          puter,
+          settings,
+          flag,
+          action
+        });
+      } catch (error) {
+        console.warn("Failed to compose AI moderation DM:", error.message || error);
+        return fallbackDmText({ action, reason: flag.reason });
+      }
+    };
 
     const outcome = await executeModerationAction({
       server,
@@ -329,7 +444,7 @@ function createStoatBot({ config, db, puter }) {
       reason: `${flag.reason} | ${flag.rationale || "AI flag"}`,
       timeoutMinutes: settings.timeoutMinutes,
       by: moderatorUserId ? `Moderator ${moderatorUserId}` : "AI",
-      dmText
+      queueDmText
     });
 
     db.recordUserAction(flag.guild_id, flag.user_id, action);

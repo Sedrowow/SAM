@@ -99,6 +99,27 @@ async function sendModerationDmText({ server, channel, userId, text }) {
   return { sent: false, details: "DM delivery unavailable (user DMs may be closed)" };
 }
 
+function dispatchModerationDmAsync({ server, channel, userId, dmText, queueDmText }) {
+  // Do not block moderation action execution on DM generation or delivery.
+  void (async () => {
+    try {
+      let text = String(dmText || "").trim();
+      if (!text && typeof queueDmText === "function") {
+        const generated = await queueDmText();
+        text = String(generated || "").trim();
+      }
+
+      if (!text) {
+        return;
+      }
+
+      await sendModerationDmText({ server, channel, userId, text });
+    } catch (error) {
+      console.warn("Failed to send moderation DM:", error?.message || error);
+    }
+  })();
+}
+
 async function executeModerationAction({
   server,
   channel,
@@ -108,7 +129,8 @@ async function executeModerationAction({
   reason,
   timeoutMinutes,
   by = "AI",
-  dmText = ""
+  dmText = "",
+  queueDmText = null
 }) {
   const normalizedReason = `${by} moderation: ${reason || "Rule violation"}`;
 
@@ -117,17 +139,18 @@ async function executeModerationAction({
   }
 
   if (action === "warn") {
-    const dm = await sendModerationDmText({
+    dispatchModerationDmAsync({
       server,
       channel,
       userId,
-      text: dmText
+      dmText,
+      queueDmText
     });
     return {
       action: "warn",
       success: true,
-      details: `Warning recorded. ${dm.details}`,
-      dmSent: dm.sent
+      details: "Warning recorded. User DM notification queued.",
+      dmQueued: true
     };
   }
 
@@ -142,17 +165,18 @@ async function executeModerationAction({
     }
 
     await targetMessage.delete();
-    const dm = await sendModerationDmText({
+    dispatchModerationDmAsync({
       server,
       channel,
       userId,
-      text: dmText
+      dmText,
+      queueDmText
     });
     return {
       action: "delete",
       success: true,
-      details: `Flagged message deleted. ${dm.details}`,
-      dmSent: dm.sent
+      details: "Flagged message deleted. User DM notification queued.",
+      dmQueued: true
     };
   }
 
@@ -163,49 +187,52 @@ async function executeModerationAction({
     }
 
     await member.edit({ timeout: toTimeoutIso(timeoutMinutes) });
-    const dm = await sendModerationDmText({
+    dispatchModerationDmAsync({
       server,
       channel,
       userId,
-      text: dmText
+      dmText,
+      queueDmText
     });
     return {
       action: "timeout",
       success: true,
-      details: `Timed out for ${timeoutMinutes} minutes. ${dm.details}`,
-      dmSent: dm.sent
+      details: `Timed out for ${timeoutMinutes} minutes. User DM notification queued.`,
+      dmQueued: true
     };
   }
 
   if (action === "kick") {
     await server.kickUser(userId);
-    const dm = await sendModerationDmText({
+    dispatchModerationDmAsync({
       server,
       channel,
       userId,
-      text: dmText
+      dmText,
+      queueDmText
     });
     return {
       action: "kick",
       success: true,
-      details: `User kicked. ${dm.details}`,
-      dmSent: dm.sent
+      details: "User kicked. DM notification queued.",
+      dmQueued: true
     };
   }
 
   if (action === "ban") {
     await server.banUser(userId, { reason: normalizedReason });
-    const dm = await sendModerationDmText({
+    dispatchModerationDmAsync({
       server,
       channel,
       userId,
-      text: dmText
+      dmText,
+      queueDmText
     });
     return {
       action: "ban",
       success: true,
-      details: `User banned. ${dm.details}`,
-      dmSent: dm.sent
+      details: "User banned. DM notification queued.",
+      dmQueued: true
     };
   }
 
