@@ -121,38 +121,39 @@ function sanitizeImageDescriptionText(text) {
     return "";
   }
 
-  const normalized = raw
+  const withoutCode = raw
     .replace(/\r/g, "\n")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/\*\*/g, "")
     .replace(/`/g, "")
-    .replace(/\s+/g, " ")
     .trim();
 
-  const lower = normalized.toLowerCase();
-  if (
-    lower.startsWith("{\"success\"") ||
-    lower.startsWith("{\"result\"") ||
-    lower.includes("\"tool_calls\"") ||
-    lower.includes("\"reasoning\"") ||
-    lower.includes("the user wants a factual description") ||
-    lower.includes("analyze the image")
-  ) {
+  const quotedMatch = withoutCode.match(/imageDescription\s*["']?\s*[:=]\s*["']([^"']{6,260})["']/i);
+  if (quotedMatch?.[1]) {
+    return cleanDisplayText(quotedMatch[1].trim(), 220);
+  }
+
+  const noisePattern = /success|result|tool_calls|reasoning|json|schema|index|role|assistant|content|the user wants|analyze the image|return only/i;
+  const candidates = withoutCode
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((line) => line.replace(/^[\s\-:;,."'{}\[\]]+|[\s\-:;,."'{}\[\]]+$/g, "").trim())
+    .filter((line) => line.length >= 12)
+    .filter((line) => /[a-zA-Z]/.test(line))
+    .filter((line) => !noisePattern.test(line))
+    .map((line) => line.replace(/^image description:?\s*/i, "").replace(/^description:?\s*/i, "").trim())
+    .filter(Boolean);
+
+  if (candidates.length) {
+    const preferred = candidates[candidates.length - 1];
+    return cleanDisplayText(preferred, 220);
+  }
+
+  const flattened = withoutCode.replace(/\s+/g, " ").trim();
+  if (!flattened || noisePattern.test(flattened)) {
     return "";
   }
 
-  const cleaned = normalized
-    .replace(/^here(?: is|'s)\s+/i, "")
-    .replace(/^image description:?\s*/i, "")
-    .replace(/^description:?\s*/i, "")
-    .trim();
-
-  if (!cleaned) {
-    return "";
-  }
-
-  const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] || cleaned;
-  return cleanDisplayText(firstSentence, 220);
+  return cleanDisplayText(flattened.split(/(?<=[.!?])\s+/)[0] || flattened, 220);
 }
 
 function inferDecisionFromReasoning(reasoningText) {
@@ -426,6 +427,8 @@ async function generateImageDescription({ puter, model, temperature, imageAttach
     parsed?.choices?.[0]?.message?.content ||
     parsed?.output_text ||
     parsed?.text ||
+    extractFinalAnswerText(rawText) ||
+    decisionPayloadToText(rawText) ||
     ""
   ).trim();
 
