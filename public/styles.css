@@ -259,6 +259,15 @@ td code {
   opacity: 0.75;
 }
 
+.message-preview-desc {
+  max-width: 180px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  opacity: 0.88;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .message-preview {
   display: block;
   width: 110px;

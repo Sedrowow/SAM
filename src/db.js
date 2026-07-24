@@ -76,6 +76,7 @@ function createDatabase(dbPath, seedSettings = {}) {
       flag_reason TEXT,
       ai_confidence REAL,
       ai_recommended_action TEXT,
+      ai_image_description TEXT,
       ai_rationale TEXT,
       ai_raw_json TEXT,
       image_attachment_count INTEGER NOT NULL DEFAULT 0,
@@ -135,6 +136,7 @@ function createDatabase(dbPath, seedSettings = {}) {
   ensureColumn(db, "messages", "ai_summary", "TEXT");
   ensureColumn(db, "messages", "guild_name", "TEXT");
   ensureColumn(db, "messages", "edited_at", "TEXT");
+  ensureColumn(db, "messages", "ai_image_description", "TEXT");
   ensureColumn(db, "messages", "image_attachment_count", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "messages", "image_attachment_preview_url", "TEXT");
   ensureColumn(db, "messages", "image_attachment_preview_name", "TEXT");
@@ -234,9 +236,9 @@ function createDatabase(dbPath, seedSettings = {}) {
         INSERT INTO messages (
           discord_message_id, guild_id, guild_name, channel_id, channel_name, user_id,
           username, display_name, content, created_at, edited_at,
-          flagged, flag_reason, ai_confidence, ai_recommended_action, ai_summary, ai_rationale, ai_raw_json,
+          flagged, flag_reason, ai_confidence, ai_recommended_action, ai_image_description, ai_summary, ai_rationale, ai_raw_json,
           image_attachment_count, image_attachment_preview_url, image_attachment_preview_name
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(discord_message_id) DO UPDATE SET
           guild_id = excluded.guild_id,
           guild_name = excluded.guild_name,
@@ -252,6 +254,7 @@ function createDatabase(dbPath, seedSettings = {}) {
           flag_reason = excluded.flag_reason,
           ai_confidence = excluded.ai_confidence,
           ai_recommended_action = excluded.ai_recommended_action,
+          ai_image_description = excluded.ai_image_description,
           ai_summary = excluded.ai_summary,
           ai_rationale = excluded.ai_rationale,
           ai_raw_json = excluded.ai_raw_json,
@@ -274,6 +277,7 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.flagReason || null,
         payload.aiConfidence ?? null,
         payload.aiRecommendedAction ?? null,
+        payload.aiImageDescription ?? null,
         payload.aiSummary ?? null,
         payload.aiRationale ?? null,
         payload.aiRawJson ?? null,
@@ -485,8 +489,9 @@ function createDatabase(dbPath, seedSettings = {}) {
                channel_id AS channelId, channel_name AS channelName,
                user_id AS userId, username, display_name AS displayName,
            content, created_at AS createdAt, edited_at AS editedAt, flagged,
-               flag_reason AS flagReason, ai_confidence AS aiConfidence,
-               ai_recommended_action AS aiRecommendedAction, ai_summary AS aiSummary,
+             flag_reason AS flagReason, ai_confidence AS aiConfidence,
+             ai_recommended_action AS aiRecommendedAction, ai_image_description AS aiImageDescription,
+             ai_summary AS aiSummary,
              ai_rationale AS aiRationale,
              image_attachment_count AS imageAttachmentCount,
              image_attachment_preview_url AS imageAttachmentPreviewUrl,

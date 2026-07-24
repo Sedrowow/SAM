@@ -994,6 +994,7 @@ function createStoatBot({ config, db, puter }) {
         flagReason: decision.reason,
         aiConfidence: decision.confidence,
         aiRecommendedAction: decision.recommendedAction,
+        aiImageDescription: decision.imageDescription,
         aiSummary: decision.summary,
         aiRationale: decision.rationale,
         aiRawJson: decision.rawJson

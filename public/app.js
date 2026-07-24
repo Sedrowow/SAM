@@ -78,6 +78,7 @@ function mediaPreviewCell(row) {
   const count = Number(row.imageAttachmentCount || 0);
   const previewUrl = row.imageAttachmentPreviewUrl || "";
   const previewName = row.imageAttachmentPreviewName || "image preview";
+  const imageDescription = (row.aiImageDescription || "").trim();
 
   if (!count) {
     return row.content ? "-" : "Text only";
@@ -88,7 +89,11 @@ function mediaPreviewCell(row) {
     ? `<a href="${escapeAttr(previewUrl)}" target="_blank" rel="noreferrer"><img class="message-preview" src="${escapeAttr(previewUrl)}" alt="${escapeAttr(previewName)}" loading="lazy" /></a>`
     : "<span class=\"preview-missing\">preview unavailable</span>";
 
-  return `<div class="message-preview-wrap"><div class="message-preview-meta">${escapeHtml(label)}</div>${imageMarkup}</div>`;
+  const descriptionMarkup = imageDescription
+    ? `<div class="message-preview-desc">${escapeHtml(imageDescription)}</div>`
+    : "";
+
+  return `<div class="message-preview-wrap"><div class="message-preview-meta">${escapeHtml(label)}</div>${imageMarkup}${descriptionMarkup}</div>`;
 }
 
 function selectedServerId() {
