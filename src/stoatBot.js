@@ -212,14 +212,36 @@ function looksLikeJsonEnvelope(text) {
 }
 
 function cleanDmText(text) {
-  const cleaned = String(text || "")
+  const raw = String(text || "");
+
+  const cutMarkers = [
+    /\bcheck\s+against\s+constraints\b/i,
+    /\brefining\s+for\b/i,
+    /\bdirect\/personal\?/i,
+    /\bhuman\/calm\/respectful\?/i,
+    /\bjson\s+format\?/i,
+    /\bconstraints\s*:\s*\*/i
+  ];
+
+  let cropped = raw;
+  for (const marker of cutMarkers) {
+    const match = cropped.match(marker);
+    if (match?.index > 0) {
+      cropped = cropped.slice(0, match.index);
+      break;
+    }
+  }
+
+  const cleaned = cropped
     .replace(/^```[a-z]*\s*/i, "")
     .replace(/```$/i, "")
     .replace(/^\s*\d+\s*\(?too\s+robotic\)?\s*:?\s*/i, "")
     .replace(/^\s*too\s+robotic\s*:?\s*/i, "")
+    .replace(/^\s*\d+\s*:\*\s*/i, "")
     .replace(/^\s*\*+\s*/gm, "")
     .replace(/^\s*[-•]\s*/gm, "")
     .replace(/^\s*\*\s*/gm, "")
+    .replace(/\([^)]*\b\d+\s*sentences?\b[^)]*\)\s*$/i, "")
     .replace(/^\s*"|"\s*$/g, "")
     .replace(/\s+/g, " ")
     .trim();
