@@ -15,6 +15,7 @@ const ACTIONS = ["none", "warn", "delete", "timeout", "kick", "ban"];
 const DIRECT_SELF_HARM_PATTERNS = [
   /\bkys\b/i,
   /kill\s+yourself/i,
+  /k\s*y\s*s/i,
   /end\s+your\s+life/i,
   /go\s+die/i,
   /hang\s+yourself/i,
@@ -28,7 +29,17 @@ const DIRECT_THREAT_PATTERNS = [
   /\bstab\s+you\b/i,
   /\bshoot\s+you\b/i,
   /\bmurder\s+you\b/i,
-  /\bbeat\s+you\s+up\b/i
+  /\bbeat\s+you\s+up\b/i,
+  /\bdie\s+already\b/i,
+  /\beliminat(?:e|ing)\s+you\b/i,
+  /\byou\s+should\s+die\b/i,
+  /\byou\s+deserve\s+to\s+die\b/i
+];
+
+const DIRECT_HARASSMENT_PATTERNS = [
+  /\b(?:you|ur)\s+(?:idiot|moron|twat|retard|loser)\b/i,
+  /\bfuck\s+you\b/i,
+  /\bstupid\s+ass\b/i
 ];
 
 function pickActionWithinPolicy(action, allowedActions, maxAutoAction, allowedByCap) {
@@ -90,11 +101,46 @@ function parseModelJson(rawText) {
     throw new Error("Empty AI response");
   }
 
+  if (typeof rawText === "object") {
+    const hasDecisionShape =
+      rawText.flagged !== undefined ||
+      rawText.reason !== undefined ||
+      rawText.recommendedAction !== undefined ||
+      rawText.action !== undefined;
+
+    if (hasDecisionShape) {
+      return rawText;
+    }
+
+    const embeddedText =
+      rawText?.message?.content ||
+      rawText?.result?.message?.content ||
+      rawText?.data?.message?.content ||
+      rawText?.choices?.[0]?.message?.content ||
+      rawText?.text ||
+      null;
+
+    if (embeddedText) {
+      return parseModelJson(embeddedText);
+    }
+
+    if (rawText.result && typeof rawText.result === "object") {
+      return rawText.result;
+    }
+
+    return rawText;
+  }
+
   const cleaned = String(rawText)
     .replace(/^```json\s*/i, "")
     .replace(/^```/i, "")
     .replace(/```$/i, "")
     .trim();
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}$/);
+  if (jsonMatch) {
+    return JSON.parse(jsonMatch[0]);
+  }
 
   return JSON.parse(cleaned);
 }
@@ -164,8 +210,9 @@ function applySafetyHeuristics({ message, recentMessages, normalized }) {
   const lower = text.toLowerCase();
   const hasSelfHarmThreat = DIRECT_SELF_HARM_PATTERNS.some((pattern) => pattern.test(lower));
   const hasDirectThreat = DIRECT_THREAT_PATTERNS.some((pattern) => pattern.test(lower));
+  const hasDirectedHarassment = DIRECT_HARASSMENT_PATTERNS.some((pattern) => pattern.test(lower));
 
-  if (!hasSelfHarmThreat && !hasDirectThreat) {
+  if (!hasSelfHarmThreat && !hasDirectThreat && !hasDirectedHarassment) {
     return {
       ...normalized,
       summary: normalized.summary || summarizeWithContext(message, recentMessages),
@@ -185,6 +232,23 @@ function applySafetyHeuristics({ message, recentMessages, normalized }) {
         : "delete",
       summary: "Message contains direct self-harm encouragement or threat language.",
       rationale: "Heuristic override: direct self-harm phrase detected (e.g. 'kys' / 'kill yourself')."
+    };
+  }
+
+  if (hasDirectedHarassment) {
+    return {
+      ...normalized,
+      flagged: true,
+      reason: "harassment",
+      severity: ["medium", "high", "critical"].includes(normalized.severity)
+        ? normalized.severity
+        : "medium",
+      confidence: Math.max(normalized.confidence, 0.75),
+      recommendedAction: ["warn", "delete", "timeout", "kick", "ban"].includes(normalized.recommendedAction)
+        ? normalized.recommendedAction
+        : "warn",
+      summary: "Message contains direct targeted harassment.",
+      rationale: "Heuristic override: directed insult/abusive phrase detected."
     };
   }
 
@@ -257,7 +321,9 @@ async function moderateMessage({
     const rawText =
       response?.message?.content?.[0]?.text ||
       response?.message?.content ||
-      response?.message ||
+      response?.result?.message?.content ||
+      response?.data?.message?.content ||
+      response?.result ||
       response;
 
     parsed = parseModelJson(rawText);
