@@ -228,11 +228,11 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.createdAt,
         payload.flagged ? 1 : 0,
         payload.flagReason || null,
-        payload.aiConfidence || null,
-        payload.aiRecommendedAction || null,
-        payload.aiSummary || null,
-        payload.aiRationale || null,
-        payload.aiRawJson || null
+        payload.aiConfidence ?? null,
+        payload.aiRecommendedAction ?? null,
+        payload.aiSummary ?? null,
+        payload.aiRationale ?? null,
+        payload.aiRawJson ?? null
       );
 
       return result.lastInsertRowid;
@@ -464,6 +464,105 @@ function createDatabase(dbPath, seedSettings = {}) {
         pendingFlags: Number(pendingFlags),
         actedFlags: Number(actedFlags)
       };
+    },
+
+    getUsersOverview(limit = 250) {
+      const safeLimit = Math.min(Math.max(Number(limit || 250), 1), 2000);
+
+      return db.prepare(`
+        WITH user_base AS (
+          SELECT guild_id, user_id FROM messages
+          UNION
+          SELECT guild_id, user_id FROM users
+        ),
+        msg_agg AS (
+          SELECT guild_id, user_id,
+                 COUNT(*) AS totalMessages,
+                 SUM(CASE WHEN flagged = 1 THEN 1 ELSE 0 END) AS flaggedMessages,
+                 MAX(created_at) AS lastMessageAt,
+                 COALESCE(MAX(display_name), MAX(username), user_id) AS displayName,
+                 MAX(username) AS username
+          FROM messages
+          GROUP BY guild_id, user_id
+        ),
+        flag_agg AS (
+          SELECT guild_id, user_id,
+                 SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pendingFlags,
+                 SUM(CASE WHEN status = 'acted' THEN 1 ELSE 0 END) AS actedFlags,
+                 SUM(CASE WHEN status = 'dismissed' THEN 1 ELSE 0 END) AS dismissedFlags,
+                 MAX(updated_at) AS lastFlagAt
+          FROM flags
+          GROUP BY guild_id, user_id
+        )
+        SELECT
+          ub.guild_id AS guildId,
+          ub.user_id AS userId,
+          COALESCE(ma.displayName, ub.user_id) AS displayName,
+          COALESCE(ma.username, ub.user_id) AS username,
+          COALESCE(ma.totalMessages, 0) AS totalMessages,
+          COALESCE(ma.flaggedMessages, 0) AS flaggedMessages,
+          COALESCE(fa.pendingFlags, 0) AS pendingFlags,
+          COALESCE(fa.actedFlags, 0) AS actedFlags,
+          COALESCE(fa.dismissedFlags, 0) AS dismissedFlags,
+          COALESCE(u.warns, 0) AS warns,
+          COALESCE(u.timeouts, 0) AS timeouts,
+          COALESCE(u.kicks, 0) AS kicks,
+          COALESCE(u.bans, 0) AS bans,
+          ma.lastMessageAt,
+          fa.lastFlagAt,
+          (
+            SELECT m2.flag_reason
+            FROM messages m2
+            WHERE m2.guild_id = ub.guild_id
+              AND m2.user_id = ub.user_id
+              AND m2.flagged = 1
+              AND m2.flag_reason IS NOT NULL
+            GROUP BY m2.flag_reason
+            ORDER BY COUNT(*) DESC, m2.flag_reason ASC
+            LIMIT 1
+          ) AS topReason
+        FROM user_base ub
+        LEFT JOIN msg_agg ma ON ma.guild_id = ub.guild_id AND ma.user_id = ub.user_id
+        LEFT JOIN flag_agg fa ON fa.guild_id = ub.guild_id AND fa.user_id = ub.user_id
+        LEFT JOIN users u ON u.guild_id = ub.guild_id AND u.user_id = ub.user_id
+        ORDER BY COALESCE(ma.flaggedMessages, 0) DESC,
+                 COALESCE(fa.pendingFlags, 0) DESC,
+                 COALESCE(ma.totalMessages, 0) DESC,
+                 ub.user_id ASC
+        LIMIT ?
+      `).all(safeLimit);
+    },
+
+    deleteMessagesByUser({ userId, guildId = null }) {
+      if (!userId) {
+        throw new Error("userId is required");
+      }
+
+      const params = guildId ? [guildId, userId] : [userId];
+      const where = guildId ? "guild_id = ? AND user_id = ?" : "user_id = ?";
+
+      const tx = db.transaction(() => {
+        const messageRowIds = db.prepare(`SELECT id FROM messages WHERE ${where}`).all(...params);
+        const ids = messageRowIds.map((row) => row.id);
+
+        let flagsDeleted = 0;
+        if (ids.length > 0) {
+          const placeholders = ids.map(() => "?").join(", ");
+          const result = db.prepare(`DELETE FROM flags WHERE message_row_id IN (${placeholders})`).run(...ids);
+          flagsDeleted = result.changes;
+        }
+
+        const messagesDeleted = db.prepare(`DELETE FROM messages WHERE ${where}`).run(...params).changes;
+        const contextDeleted = db.prepare(`DELETE FROM recent_context WHERE ${where}`).run(...params).changes;
+
+        return {
+          messagesDeleted,
+          flagsDeleted,
+          contextDeleted
+        };
+      });
+
+      return tx();
     },
 
     allowedByCap(action, maxAction) {

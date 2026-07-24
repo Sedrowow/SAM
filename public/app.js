@@ -41,6 +41,39 @@ function actionButton(label, className, onClick) {
   return button;
 }
 
+function observationStrictness(row) {
+  const total = Number(row.totalMessages || 0);
+  const flagged = Number(row.flaggedMessages || 0);
+  const acted = Number(row.actedFlags || 0);
+  const punishments = Number(row.warns || 0) + Number(row.timeouts || 0) + Number(row.kicks || 0) + Number(row.bans || 0);
+  const ratio = total > 0 ? flagged / total : 0;
+
+  if (ratio >= 0.45 || acted >= 10 || punishments >= 12) {
+    return "strict";
+  }
+  if (ratio >= 0.2 || acted >= 4 || punishments >= 5) {
+    return "moderate";
+  }
+  return "light";
+}
+
+function behaviourSummary(row) {
+  const flagged = Number(row.flaggedMessages || 0);
+  const total = Number(row.totalMessages || 0);
+  const topReason = row.topReason || "none";
+  if (total === 0) {
+    return "No message history yet.";
+  }
+  if (flagged === 0) {
+    return "No flagged behavior observed so far.";
+  }
+  return `${flagged}/${total} messages flagged, top risk category: ${topReason}.`;
+}
+
+function escapeAttr(text) {
+  return escapeHtml(text).replace(/"/g, "&quot;");
+}
+
 async function loadStats() {
   const { stats, reasonCounts } = await api("/api/stats");
   const statsGrid = qs("statsGrid");
@@ -108,6 +141,19 @@ async function takeFlagAction(flagId, action) {
   await Promise.all([loadFlags(), loadStats(), loadMessages()]);
 }
 
+async function deleteMessagesForUser(userId, guildId = "") {
+  if (!userId) {
+    throw new Error("User ID is required");
+  }
+
+  await api("/api/db/delete-user-messages", {
+    method: "POST",
+    body: JSON.stringify({ userId, guildId: guildId || undefined })
+  });
+
+  await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers()]);
+}
+
 async function loadFlags() {
   const { flags } = await api("/api/flags?limit=300");
   const body = qs("flagsBody");
@@ -158,6 +204,47 @@ async function loadFlags() {
       <td>${severityBadge(row.severity, false)}</td>
       <td>${severityBadge(row.recommendedAction, false)}</td>
       <td>${severityBadge(row.status, false)}</td>
+    `;
+
+    tr.appendChild(actionTd);
+    body.appendChild(tr);
+  }
+}
+
+async function loadUsers() {
+  const { users } = await api("/api/users?limit=500");
+  const body = qs("usersBody");
+  body.innerHTML = "";
+
+  for (const row of users) {
+    const strictness = observationStrictness(row);
+    const tr = document.createElement("tr");
+
+    const actionTd = document.createElement("td");
+    const actionWrap = document.createElement("div");
+    actionWrap.className = "flag-actions";
+    actionWrap.appendChild(
+      actionButton("Delete Messages", "btn btn-danger", async () => {
+        const ok = confirm(`Delete all stored messages for user ${row.userId}?`);
+        if (!ok) return;
+        try {
+          await deleteMessagesForUser(row.userId, row.guildId);
+        } catch (error) {
+          alert(error.message);
+        }
+      })
+    );
+    actionTd.appendChild(actionWrap);
+
+    tr.innerHTML = `
+      <td><code>${escapeHtml(row.displayName || row.username || row.userId)}</code><br/><code>${escapeHtml(row.userId)}</code></td>
+      <td>${escapeHtml(String(row.totalMessages || 0))}</td>
+      <td>${escapeHtml(String(row.flaggedMessages || 0))}</td>
+      <td>${severityBadge(row.topReason || "none", Boolean(row.topReason && row.topReason !== "none"))}</td>
+      <td>${escapeHtml(`w:${row.warns || 0} t:${row.timeouts || 0} k:${row.kicks || 0} b:${row.bans || 0}`)}</td>
+      <td class="ai-cell">${escapeHtml(behaviourSummary(row))}</td>
+      <td>${severityBadge(strictness, strictness === "strict")}</td>
+      <td>${escapeHtml(humanDate(row.lastMessageAt || row.lastFlagAt || ""))}</td>
     `;
 
     tr.appendChild(actionTd);
@@ -242,12 +329,65 @@ async function saveSettings() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStats(), loadMessages(), loadFlags(), loadSettings()]);
+  await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers(), loadSettings()]);
+}
+
+function setupTabs() {
+  const buttons = Array.from(document.querySelectorAll(".tab-btn"));
+  const panes = Array.from(document.querySelectorAll(".tab-pane"));
+
+  const activate = (id) => {
+    for (const btn of buttons) {
+      const active = btn.dataset.tab === id;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    }
+
+    for (const pane of panes) {
+      pane.classList.toggle("active", pane.id === id);
+    }
+  };
+
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => activate(btn.dataset.tab));
+  });
+}
+
+async function deleteMessagesFromDbForm() {
+  const userId = qs("dbDeleteUserId").value.trim();
+  const guildId = qs("dbDeleteGuildId").value.trim();
+  const status = qs("dbDeleteStatus");
+
+  if (!userId) {
+    status.textContent = "User ID is required.";
+    return;
+  }
+
+  const ok = confirm(`Delete messages for user ${userId}? This cannot be undone.`);
+  if (!ok) {
+    return;
+  }
+
+  status.textContent = "Deleting...";
+  try {
+    const response = await api("/api/db/delete-user-messages", {
+      method: "POST",
+      body: JSON.stringify({ userId, guildId: guildId || undefined })
+    });
+    const result = response.result || {};
+    status.textContent = `Deleted ${result.messagesDeleted || 0} messages, ${result.flagsDeleted || 0} flags, ${result.contextDeleted || 0} context rows.`;
+    await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers()]);
+  } catch (error) {
+    status.textContent = `Delete failed: ${error.message}`;
+  }
 }
 
 qs("refreshBtn").addEventListener("click", refreshAll);
 qs("applyFiltersBtn").addEventListener("click", loadMessages);
 qs("saveSettingsBtn").addEventListener("click", saveSettings);
+qs("dbDeleteUserMessagesBtn").addEventListener("click", deleteMessagesFromDbForm);
+
+setupTabs();
 
 refreshAll().catch((error) => {
   alert(error.message);

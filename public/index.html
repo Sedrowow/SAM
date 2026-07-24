@@ -25,13 +25,24 @@
     </header>
 
     <main class="layout">
-      <section class="card stats">
+      <section class="card tab-nav-card">
+        <div class="tab-nav" role="tablist" aria-label="Dashboard sections">
+          <button class="tab-btn active" data-tab="overviewTab" role="tab" aria-selected="true">Overview</button>
+          <button class="tab-btn" data-tab="messagesTab" role="tab" aria-selected="false">Messages</button>
+          <button class="tab-btn" data-tab="flagsTab" role="tab" aria-selected="false">Flags</button>
+          <button class="tab-btn" data-tab="usersTab" role="tab" aria-selected="false">Users</button>
+          <button class="tab-btn" data-tab="databaseTab" role="tab" aria-selected="false">Database Edit</button>
+          <button class="tab-btn" data-tab="settingsTab" role="tab" aria-selected="false">Settings</button>
+        </div>
+      </section>
+
+      <section class="card stats tab-pane active" id="overviewTab" role="tabpanel">
         <h2>Overview</h2>
         <div class="stats-grid" id="statsGrid"></div>
         <div class="chips" id="reasonChips"></div>
       </section>
 
-      <section class="card filters">
+      <section class="card filters tab-pane" id="messagesTab" role="tabpanel">
         <h2>Message Filters</h2>
         <div class="filter-grid">
           <label>
@@ -52,9 +63,6 @@
           </label>
           <button id="applyFiltersBtn" class="btn">Apply</button>
         </div>
-      </section>
-
-      <section class="card table-card">
         <h2>Monitored Messages</h2>
         <div class="table-wrap">
           <table>
@@ -75,7 +83,7 @@
         </div>
       </section>
 
-      <section class="card table-card">
+      <section class="card table-card tab-pane" id="flagsTab" role="tabpanel">
         <h2>Pending/Recent Flags</h2>
         <div class="table-wrap">
           <table>
@@ -95,7 +103,49 @@
         </div>
       </section>
 
-      <section class="card settings">
+      <section class="card table-card tab-pane" id="usersTab" role="tabpanel">
+        <h2>User Analysis</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Total Msgs</th>
+                <th>Flagged</th>
+                <th>Top Reason</th>
+                <th>Enforcement</th>
+                <th>Behaviour</th>
+                <th>Observation Strictness</th>
+                <th>Last Activity</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card tab-pane" id="databaseTab" role="tabpanel">
+        <h2>Database Edit</h2>
+        <div class="settings-grid">
+          <label>
+            User ID
+            <input id="dbDeleteUserId" placeholder="User ID to purge messages for" />
+          </label>
+
+          <label>
+            Guild ID (optional)
+            <input id="dbDeleteGuildId" placeholder="Leave blank to delete across all guilds" />
+          </label>
+
+          <div>
+            <button id="dbDeleteUserMessagesBtn" class="btn btn-danger">Delete User Messages</button>
+            <div id="dbDeleteStatus" class="status-text"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card settings tab-pane" id="settingsTab" role="tabpanel">
         <h2>Settings</h2>
         <div class="settings-grid">
           <label>

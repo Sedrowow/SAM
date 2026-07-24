@@ -41,6 +41,60 @@ function extractReasoningText(value) {
   ).trim();
 }
 
+function inferDecisionFromReasoning(reasoningText) {
+  const text = String(reasoningText || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const flaggedMatch = text.match(/(?:^|[^a-z])flagged\s*[:=]\s*(true|false)/i) ||
+    text.match(/"flagged"\s*:\s*(true|false)/i);
+  const reasonMatch = text.match(/(?:^|[^a-z])reason\s*[:=]\s*"?([a-z-]+)"?/i) ||
+    text.match(/"reason"\s*:\s*"([a-z-]+)"/i);
+  const severityMatch = text.match(/(?:^|[^a-z])severity\s*[:=]\s*"?([a-z]+)"?/i) ||
+    text.match(/"severity"\s*:\s*"([a-z]+)"/i);
+  const actionMatch = text.match(/recommended\s*action\s*[:=]\s*"?([a-z_-]+)"?/i) ||
+    text.match(/recommendedAction\s*[:=]\s*"?([a-z_-]+)"?/i) ||
+    text.match(/"recommendedAction"\s*:\s*"([a-z_-]+)"/i) ||
+    text.match(/(?:^|[^a-z])action\s*[:=]\s*"?([a-z_-]+)"?/i);
+  const confidenceMatch = text.match(/(?:^|[^a-z])confidence\s*[:=]\s*([01](?:\.\d+)?)/i) ||
+    text.match(/"confidence"\s*:\s*([01](?:\.\d+)?)/i);
+
+  const hasAnySignal = Boolean(flaggedMatch || reasonMatch || severityMatch || actionMatch || confidenceMatch);
+  if (!hasAnySignal) {
+    return null;
+  }
+
+  const flagged = flaggedMatch
+    ? flaggedMatch[1].toLowerCase() === "true"
+    : (reasonMatch ? reasonMatch[1].toLowerCase() !== "none" : false);
+
+  const reason = reasonMatch ? reasonMatch[1].toLowerCase() : (flagged ? "other" : "none");
+  const severity = severityMatch ? severityMatch[1].toLowerCase() : (flagged ? "medium" : "low");
+  const recommendedAction = actionMatch
+    ? actionMatch[1].toLowerCase().replace(/_/g, "-")
+    : (flagged ? "warn" : "none");
+  const confidence = confidenceMatch ? Number(confidenceMatch[1]) : (flagged ? 0.75 : 0.5);
+
+  const summary = text
+    .split("\n")
+    .map((line) => line.replace(/^\s*[*\-`]+\s*/, "").trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ")
+    .slice(0, 220);
+
+  return {
+    flagged,
+    reason,
+    severity,
+    confidence,
+    recommendedAction,
+    summary,
+    rationale: text.slice(0, 1200)
+  };
+}
+
 function decisionPayloadToText(value) {
   if (typeof value === "string") {
     return value;
@@ -191,6 +245,11 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
     return parsed;
   }
 
+  const inferredFromRaw = inferDecisionFromReasoning(extractReasoningText(rawText));
+  if (inferredFromRaw) {
+    return inferredFromRaw;
+  }
+
   {
     const repairPrompt = JSON.stringify(
       {
@@ -245,6 +304,11 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
     const repaired = parseModelJson(repairedText);
     if (hasDecisionShape(repaired)) {
       return repaired;
+    }
+
+    const inferredFromRepair = inferDecisionFromReasoning(extractReasoningText(repairedText));
+    if (inferredFromRepair) {
+      return inferredFromRepair;
     }
 
     throw new Error("AI repair response did not contain a moderation decision shape.");

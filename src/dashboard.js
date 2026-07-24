@@ -67,6 +67,11 @@ function createDashboard({ config, db, onActionRequested, onSettingsUpdated }) {
     res.json({ flags });
   });
 
+  app.get("/api/users", (req, res) => {
+    const users = db.getUsersOverview(req.query.limit || 250);
+    res.json({ users });
+  });
+
   app.get("/api/settings", (_req, res) => {
     const settings = db.getSettings();
     res.json({
@@ -157,6 +162,22 @@ function createDashboard({ config, db, onActionRequested, onSettingsUpdated }) {
     try {
       const outcome = await onActionRequested({ flagId, action, moderatorUserId });
       return res.json({ ok: true, outcome });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/db/delete-user-messages", (req, res) => {
+    const userId = String(req.body?.userId || "").trim();
+    const guildId = String(req.body?.guildId || "").trim() || null;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    try {
+      const result = db.deleteMessagesByUser({ userId, guildId });
+      return res.json({ ok: true, result });
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }
