@@ -11,6 +11,48 @@ function compactText(text, maxLen = 800) {
   return value.length > maxLen ? `${value.slice(0, maxLen - 3)}...` : value;
 }
 
+function cleanReasonForUser(reason, fallback = "A message appears to have broken server rules.") {
+  const raw = String(reason || "").trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  return compactText(
+    raw
+      .replace(/^\s*(ai|moderator\s+[^:]+|dashboard)\s+moderation\s*:\s*/i, "")
+      .replace(/^\s*(ai|moderation)\s*:\s*/i, "")
+      .replace(/\s+/g, " "),
+    340
+  );
+}
+
+function cleanWhyForUser(context) {
+  const raw = String(context?.rationale || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const fromReasoning = raw.match(/Reasoning:\s*([\s\S]*)$/i)?.[1] || raw;
+  return compactText(fromReasoning.replace(/\s+/g, " "), 420);
+}
+
+function actionOutcomeText(action, timeoutMinutes) {
+  switch (action) {
+    case "warn":
+      return "we sent you a warning";
+    case "delete":
+      return "we removed one of your messages";
+    case "timeout":
+      return `your account was temporarily timed out for ${timeoutMinutes} minute(s)`;
+    case "kick":
+      return "your account was removed from the server";
+    case "ban":
+      return "your account was banned from the server";
+    default:
+      return "a moderation action was taken";
+  }
+}
+
 async function collectDmTargets({ server, channel, userId }) {
   const targets = [];
 
@@ -85,28 +127,24 @@ async function trySendDmToTarget(target, text) {
   return false;
 }
 
-function buildModerationDm({ action, by, reason, context }) {
-  const actionLabel = String(action || "none").toUpperCase();
-  const who = by || "Moderation system";
-  const reasonSummary = compactText(reason || context?.reasonCategory || "Rule violation", 340);
-  const rationale = compactText(context?.rationale || "", 420);
+function buildModerationDm({ action, reason, context, timeoutMinutes }) {
+  const whatHappened = actionOutcomeText(action, timeoutMinutes);
+  const reasonSummary = cleanReasonForUser(reason || context?.reasonCategory);
+  const why = cleanWhyForUser(context);
 
   const lines = [
-    "Sentinel Moderation Notice",
-    `Action taken: ${actionLabel}`,
-    `Decision source: ${who}`,
-    context?.flagId ? `Flag ID: ${context.flagId}` : null,
-    `Reason: ${reasonSummary}`,
-    context?.recommendedAction ? `Original AI recommendation: ${context.recommendedAction}` : null,
-    rationale ? `Why: ${rationale}` : null,
-    "If you think this was a mistake, contact a server moderator."
+    "Hi, this is a moderation notice.",
+    `We've reviewed your recent activity, and ${whatHappened}.`,
+    `Why: ${reasonSummary}`,
+    why ? `More detail: ${why}` : null,
+    "If you believe this was a mistake, please contact a server moderator so it can be reviewed."
   ].filter(Boolean);
 
-  return lines.join("\n");
+  return lines.join("\n\n");
 }
 
-async function sendModerationDm({ server, channel, userId, action, by, reason, context }) {
-  const text = buildModerationDm({ action, by, reason, context });
+async function sendModerationDm({ server, channel, userId, action, reason, context, timeoutMinutes }) {
+  const text = buildModerationDm({ action, reason, context, timeoutMinutes });
   const targets = await collectDmTargets({ server, channel, userId });
 
   for (const target of targets) {
@@ -160,9 +198,9 @@ async function executeModerationAction({
       channel,
       userId,
       action,
-      by,
       reason: normalizedReason,
-      context: notificationContext
+      context: notificationContext,
+      timeoutMinutes
     });
     return {
       action: "warn",
@@ -188,9 +226,9 @@ async function executeModerationAction({
       channel,
       userId,
       action,
-      by,
       reason: normalizedReason,
-      context: notificationContext
+      context: notificationContext,
+      timeoutMinutes
     });
     return {
       action: "delete",
@@ -212,9 +250,9 @@ async function executeModerationAction({
       channel,
       userId,
       action,
-      by,
       reason: normalizedReason,
-      context: notificationContext
+      context: notificationContext,
+      timeoutMinutes
     });
     return {
       action: "timeout",
@@ -231,9 +269,9 @@ async function executeModerationAction({
       channel,
       userId,
       action,
-      by,
       reason: normalizedReason,
-      context: notificationContext
+      context: notificationContext,
+      timeoutMinutes
     });
     return {
       action: "kick",
@@ -250,9 +288,9 @@ async function executeModerationAction({
       channel,
       userId,
       action,
-      by,
       reason: normalizedReason,
-      context: notificationContext
+      context: notificationContext,
+      timeoutMinutes
     });
     return {
       action: "ban",
