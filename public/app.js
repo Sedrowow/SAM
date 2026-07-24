@@ -93,6 +93,8 @@ async function loadMessages() {
       <td class="message-cell">${escapeHtml(row.content || "")}</td>
       <td>${row.flagged ? severityBadge(row.flagReason, true) : "-"}</td>
       <td>${severityBadge(row.aiRecommendedAction || "none", false)}</td>
+      <td class="ai-cell">${escapeHtml(row.aiSummary || "-")}</td>
+      <td class="ai-cell">${escapeHtml(row.aiRationale || "-")}</td>
     `;
     body.appendChild(tr);
   }

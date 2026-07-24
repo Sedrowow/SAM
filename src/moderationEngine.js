@@ -12,6 +12,25 @@ const SAFE_REASONS = [
 
 const ACTIONS = ["none", "warn", "delete", "timeout", "kick", "ban"];
 
+const DIRECT_SELF_HARM_PATTERNS = [
+  /\bkys\b/i,
+  /kill\s+yourself/i,
+  /end\s+your\s+life/i,
+  /go\s+die/i,
+  /hang\s+yourself/i,
+  /slit\s+your\s+wrists?/i
+];
+
+const DIRECT_THREAT_PATTERNS = [
+  /\bi\s*(?:am|m)?\s*going\s*to\s*kill\s+you\b/i,
+  /\bi\s*will\s*kill\s+you\b/i,
+  /\bkill\s+you\b/i,
+  /\bstab\s+you\b/i,
+  /\bshoot\s+you\b/i,
+  /\bmurder\s+you\b/i,
+  /\bbeat\s+you\s+up\b/i
+];
+
 function pickActionWithinPolicy(action, allowedActions, maxAutoAction, allowedByCap) {
   if (!ACTIONS.includes(action)) {
     return "warn";
@@ -47,6 +66,8 @@ function buildSystemPrompt(rules) {
     "Return JSON only. No markdown. No prose outside JSON.",
     "Evaluate whether the message violates the rules and propose an action.",
     "Take context and prior violations into account.",
+    "You must flag direct threats and self-harm encouragement (e.g. 'kys', 'kill yourself').",
+    "Always provide both a short summary and a rationale, even when not flagged.",
     "JSON schema:",
     "{",
     '  "flagged": boolean,',
@@ -54,6 +75,7 @@ function buildSystemPrompt(rules) {
     '  "severity": "low|medium|high|critical",',
     '  "confidence": number,',
     '  "recommendedAction": "none|warn|delete|timeout|kick|ban",',
+    '  "summary": string,',
     '  "rationale": string',
     "}",
     "Confidence must be between 0 and 1.",
@@ -78,19 +100,36 @@ function parseModelJson(rawText) {
 }
 
 function normalizeDecision(decision) {
-  const flagged = Boolean(decision.flagged);
-  const reason = SAFE_REASONS.includes(decision.reason) ? decision.reason : "other";
-  const severity = ["low", "medium", "high", "critical"].includes(decision.severity)
-    ? decision.severity
+  const rawFlagged = decision.flagged ?? decision.isFlagged ?? decision.violates ?? false;
+  const flagged = Boolean(rawFlagged);
+
+  const rawReason = String(decision.reason ?? decision.category ?? "other").toLowerCase();
+  const reason = SAFE_REASONS.includes(rawReason) ? rawReason : "other";
+
+  const rawSeverity = String(decision.severity ?? "medium").toLowerCase();
+  const severity = ["low", "medium", "high", "critical"].includes(rawSeverity)
+    ? rawSeverity
     : "medium";
-  const confidence = Number.isFinite(Number(decision.confidence))
-    ? Math.max(0, Math.min(1, Number(decision.confidence)))
+
+  const rawConfidence = decision.confidence ?? decision.score ?? 0.5;
+  const confidence = Number.isFinite(Number(rawConfidence))
+    ? Math.max(0, Math.min(1, Number(rawConfidence)))
     : 0.5;
-  const recommendedAction = ACTIONS.includes(decision.recommendedAction)
-    ? decision.recommendedAction
+
+  const actionAliases = {
+    mute: "timeout",
+    remove: "delete",
+    delete_message: "delete"
+  };
+  const rawAction = String(decision.recommendedAction ?? decision.action ?? "none").toLowerCase();
+  const mappedAction = actionAliases[rawAction] || rawAction;
+  const recommendedAction = ACTIONS.includes(mappedAction)
+    ? mappedAction
     : flagged
       ? "warn"
       : "none";
+
+  const summary = String(decision.summary || decision.brief || "").trim();
 
   return {
     flagged,
@@ -98,7 +137,68 @@ function normalizeDecision(decision) {
     severity,
     confidence,
     recommendedAction,
+    summary,
     rationale: String(decision.rationale || "")
+  };
+}
+
+function summarizeWithContext(message, recentMessages) {
+  const text = String(message?.content || "").trim();
+  if (!text) {
+    return "Empty or non-text message.";
+  }
+
+  const excerpt = text.length > 120 ? `${text.slice(0, 117)}...` : text;
+  const recentCount = Array.isArray(recentMessages) ? recentMessages.length : 0;
+  return recentCount > 0
+    ? `Message says: "${excerpt}". Context includes ${recentCount} recent message(s).`
+    : `Message says: "${excerpt}".`;
+}
+
+function applySafetyHeuristics({ message, recentMessages, normalized }) {
+  const text = String(message?.content || "");
+  if (!text.trim()) {
+    return normalized;
+  }
+
+  const lower = text.toLowerCase();
+  const hasSelfHarmThreat = DIRECT_SELF_HARM_PATTERNS.some((pattern) => pattern.test(lower));
+  const hasDirectThreat = DIRECT_THREAT_PATTERNS.some((pattern) => pattern.test(lower));
+
+  if (!hasSelfHarmThreat && !hasDirectThreat) {
+    return {
+      ...normalized,
+      summary: normalized.summary || summarizeWithContext(message, recentMessages),
+      rationale: normalized.rationale || "No explicit policy-triggering threat pattern detected."
+    };
+  }
+
+  if (hasSelfHarmThreat) {
+    return {
+      ...normalized,
+      flagged: true,
+      reason: "self-harm",
+      severity: normalized.severity === "critical" ? "critical" : "high",
+      confidence: Math.max(normalized.confidence, 0.9),
+      recommendedAction: ["delete", "timeout", "kick", "ban"].includes(normalized.recommendedAction)
+        ? normalized.recommendedAction
+        : "delete",
+      summary: "Message contains direct self-harm encouragement or threat language.",
+      rationale: "Heuristic override: direct self-harm phrase detected (e.g. 'kys' / 'kill yourself')."
+    };
+  }
+
+  return {
+    ...normalized,
+    flagged: true,
+    reason: "violence",
+    severity: ["high", "critical"].includes(normalized.severity) ? normalized.severity : "high",
+    confidence: Math.max(normalized.confidence, 0.85),
+    recommendedAction: ["delete", "timeout", "kick", "ban"].includes(normalized.recommendedAction)
+      ? normalized.recommendedAction
+      : "delete",
+    summary: "Message contains direct threat language toward another person.",
+    rationale: "Heuristic override: direct violence/threat phrase detected."
   };
 }
 
@@ -136,38 +236,64 @@ async function moderateMessage({
     2
   );
 
-  const response = await puter.ai.chat(
-    [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt }
-    ],
-    {
-      model,
-      temperature,
-      max_tokens: 350,
-      response_format: { type: "json_object" }
-    }
-  );
+  let parsed = null;
+  let normalized = null;
+  let aiError = null;
 
-  const rawText =
-    response?.message?.content?.[0]?.text ||
-    response?.message?.content ||
-    response?.message ||
-    response;
+  try {
+    const response = await puter.ai.chat(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      {
+        model,
+        temperature,
+        max_tokens: 350,
+        response_format: { type: "json_object" }
+      }
+    );
 
-  const parsed = parseModelJson(rawText);
-  const normalized = normalizeDecision(parsed);
+    const rawText =
+      response?.message?.content?.[0]?.text ||
+      response?.message?.content ||
+      response?.message ||
+      response;
+
+    parsed = parseModelJson(rawText);
+    normalized = normalizeDecision(parsed);
+  } catch (error) {
+    aiError = error;
+    normalized = {
+      flagged: false,
+      reason: "none",
+      severity: "medium",
+      confidence: 0,
+      recommendedAction: "none",
+      summary: summarizeWithContext(message, recentMessages),
+      rationale: `AI unavailable. Using deterministic safety fallback. (${error.message})`
+    };
+  }
+
+  const withHeuristics = applySafetyHeuristics({
+    message,
+    recentMessages,
+    normalized
+  });
+
   const policySafeAction = pickActionWithinPolicy(
-    normalized.recommendedAction,
+    withHeuristics.recommendedAction,
     settings.allowedActions,
     settings.maxAutoAction,
     allowedByCap
   );
 
   return {
-    ...normalized,
+    ...withHeuristics,
+    summary: withHeuristics.summary || summarizeWithContext(message, recentMessages),
+    rationale: withHeuristics.rationale || "Model provided no rationale.",
     recommendedAction: policySafeAction,
-    rawJson: JSON.stringify(parsed)
+    rawJson: JSON.stringify(parsed || { aiError: aiError?.message || null })
   };
 }
 

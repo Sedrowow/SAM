@@ -22,6 +22,9 @@ function createFlagLogText({ flagId, message, decision, userStats, autoApplied, 
     `Suggested action: ${decision.recommendedAction}`,
     `Prior violations: warn=${userStats.warns}, timeout=${userStats.timeouts}, kick=${userStats.kicks}, ban=${userStats.bans}`,
     "",
+    "Summary:",
+    decision.summary || "No summary",
+    "",
     "Reasoning:",
     decision.rationale || "No rationale",
     "",
@@ -436,6 +439,7 @@ function createStoatBot({ config, db, puter }) {
             flagReason: decision.reason,
             aiConfidence: decision.confidence,
             aiRecommendedAction: decision.recommendedAction,
+            aiSummary: decision.summary,
             aiRationale: decision.rationale,
             aiRawJson: decision.rawJson
           });
@@ -454,7 +458,7 @@ function createStoatBot({ config, db, puter }) {
             severity: decision.severity,
             confidence: decision.confidence,
             recommendedAction: decision.recommendedAction,
-            rationale: decision.rationale
+            rationale: `Summary: ${decision.summary || "n/a"}\nReasoning: ${decision.rationale || "n/a"}`
           });
 
           let autoApplied = false;
@@ -504,6 +508,7 @@ function createStoatBot({ config, db, puter }) {
             flagReason: null,
             aiConfidence: null,
             aiRecommendedAction: null,
+            aiSummary: "Moderation failed before decision.",
             aiRationale: `AI error: ${error.message}`,
             aiRawJson: null
           });

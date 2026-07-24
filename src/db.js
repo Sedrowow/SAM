@@ -27,6 +27,14 @@ function safeJsonParse(value, fallback) {
   }
 }
 
+function ensureColumn(db, tableName, columnName, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const exists = columns.some((col) => col.name === columnName);
+  if (!exists) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+}
+
 function createDatabase(dbPath, seedSettings = {}) {
   ensureDirectoryForFile(dbPath);
   const db = new Database(dbPath);
@@ -117,6 +125,9 @@ function createDatabase(dbPath, seedSettings = {}) {
     ON recent_context(guild_id, user_id, created_at DESC);
   `);
 
+  // Backward-compatible schema upgrades.
+  ensureColumn(db, "messages", "ai_summary", "TEXT");
+
   const defaultSettings = {
     stoatBotToken: "",
     moderationChannelId: "",
@@ -201,8 +212,8 @@ function createDatabase(dbPath, seedSettings = {}) {
         INSERT OR REPLACE INTO messages (
           discord_message_id, guild_id, channel_id, channel_name, user_id,
           username, display_name, content, created_at,
-          flagged, flag_reason, ai_confidence, ai_recommended_action, ai_rationale, ai_raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          flagged, flag_reason, ai_confidence, ai_recommended_action, ai_summary, ai_rationale, ai_raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = stmt.run(
@@ -219,6 +230,7 @@ function createDatabase(dbPath, seedSettings = {}) {
         payload.flagReason || null,
         payload.aiConfidence || null,
         payload.aiRecommendedAction || null,
+        payload.aiSummary || null,
         payload.aiRationale || null,
         payload.aiRawJson || null
       );
@@ -388,7 +400,8 @@ function createDatabase(dbPath, seedSettings = {}) {
                user_id AS userId, username, display_name AS displayName,
                content, created_at AS createdAt, flagged,
                flag_reason AS flagReason, ai_confidence AS aiConfidence,
-               ai_recommended_action AS aiRecommendedAction, ai_rationale AS aiRationale
+               ai_recommended_action AS aiRecommendedAction, ai_summary AS aiSummary,
+               ai_rationale AS aiRationale
         FROM messages
         ${where}
         ORDER BY created_at DESC

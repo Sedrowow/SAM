@@ -197,7 +197,7 @@ fieldset label {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 900px;
+  min-width: 1300px;
 }
 
 th,
@@ -215,6 +215,13 @@ td code {
 
 .message-cell {
   max-width: 360px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-cell {
+  min-width: 220px;
+  max-width: 320px;
   white-space: pre-wrap;
   word-break: break-word;
 }
