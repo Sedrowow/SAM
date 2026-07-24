@@ -47,34 +47,50 @@ function inferDecisionFromReasoning(reasoningText) {
     return null;
   }
 
-  const flaggedMatch = text.match(/(?:^|[^a-z])flagged\s*[:=]\s*(true|false)/i) ||
-    text.match(/"flagged"\s*:\s*(true|false)/i);
-  const reasonMatch = text.match(/(?:^|[^a-z])reason\s*[:=]\s*"?([a-z-]+)"?/i) ||
-    text.match(/"reason"\s*:\s*"([a-z-]+)"/i);
-  const severityMatch = text.match(/(?:^|[^a-z])severity\s*[:=]\s*"?([a-z]+)"?/i) ||
-    text.match(/"severity"\s*:\s*"([a-z]+)"/i);
-  const actionMatch = text.match(/recommended\s*action\s*[:=]\s*"?([a-z_-]+)"?/i) ||
-    text.match(/recommendedAction\s*[:=]\s*"?([a-z_-]+)"?/i) ||
-    text.match(/"recommendedAction"\s*:\s*"([a-z_-]+)"/i) ||
-    text.match(/(?:^|[^a-z])action\s*[:=]\s*"?([a-z_-]+)"?/i);
-  const confidenceMatch = text.match(/(?:^|[^a-z])confidence\s*[:=]\s*([01](?:\.\d+)?)/i) ||
-    text.match(/"confidence"\s*:\s*([01](?:\.\d+)?)/i);
+  const grab = (patterns) => {
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+    return null;
+  };
 
-  const hasAnySignal = Boolean(flaggedMatch || reasonMatch || severityMatch || actionMatch || confidenceMatch);
+  const flaggedValue = grab([
+    /[`"']?flagged[`"']?\s*[:=]\s*(true|false)/i,
+    /\bflagged\b[^\n]{0,20}(true|false)/i
+  ]);
+  const reasonValue = grab([
+    /[`"']?reason[`"']?\s*[:=]\s*[`"']?([a-z-]+)[`"']?/i
+  ]);
+  const severityValue = grab([
+    /[`"']?severity[`"']?\s*[:=]\s*[`"']?([a-z]+)[`"']?/i
+  ]);
+  const actionValue = grab([
+    /[`"']?recommendedAction[`"']?\s*[:=]\s*[`"']?([a-z_-]+)[`"']?/i,
+    /recommended\s*action\s*[:=]\s*[`"']?([a-z_-]+)[`"']?/i,
+    /[`"']?action[`"']?\s*[:=]\s*[`"']?([a-z_-]+)[`"']?/i
+  ]);
+  const confidenceValue = grab([
+    /[`"']?confidence[`"']?\s*[:=]\s*([01](?:\.\d+)?)/i
+  ]);
+
+  const hasAnySignal = Boolean(flaggedValue || reasonValue || severityValue || actionValue || confidenceValue);
   if (!hasAnySignal) {
     return null;
   }
 
-  const flagged = flaggedMatch
-    ? flaggedMatch[1].toLowerCase() === "true"
-    : (reasonMatch ? reasonMatch[1].toLowerCase() !== "none" : false);
+  const flagged = flaggedValue
+    ? flaggedValue.toLowerCase() === "true"
+    : (reasonValue ? reasonValue.toLowerCase() !== "none" : false);
 
-  const reason = reasonMatch ? reasonMatch[1].toLowerCase() : (flagged ? "other" : "none");
-  const severity = severityMatch ? severityMatch[1].toLowerCase() : (flagged ? "medium" : "low");
-  const recommendedAction = actionMatch
-    ? actionMatch[1].toLowerCase().replace(/_/g, "-")
+  const reason = reasonValue ? reasonValue.toLowerCase() : (flagged ? "other" : "none");
+  const severity = severityValue ? severityValue.toLowerCase() : (flagged ? "medium" : "low");
+  const recommendedAction = actionValue
+    ? actionValue.toLowerCase().replace(/_/g, "-")
     : (flagged ? "warn" : "none");
-  const confidence = confidenceMatch ? Number(confidenceMatch[1]) : (flagged ? 0.75 : 0.5);
+  const confidence = confidenceValue ? Number(confidenceValue) : (flagged ? 0.75 : 0.5);
 
   const summary = text
     .split("\n")
@@ -243,6 +259,11 @@ async function parseOrRepairDecision({ puter, model, temperature, rawText, messa
 
   if (hasDecisionShape(parsed)) {
     return parsed;
+  }
+
+  const inferredFromParsed = inferDecisionFromReasoning(extractReasoningText(parsed));
+  if (inferredFromParsed) {
+    return inferredFromParsed;
   }
 
   const inferredFromRaw = inferDecisionFromReasoning(extractReasoningText(rawText));

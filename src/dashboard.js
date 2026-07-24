@@ -183,6 +183,18 @@ function createDashboard({ config, db, onActionRequested, onSettingsUpdated }) {
     }
   });
 
+  app.get("/api/db/raw", (req, res) => {
+    const table = String(req.query.table || "messages").trim();
+    const limit = Number(req.query.limit || 100);
+
+    try {
+      const result = db.getRawTableRows({ table, limit });
+      return res.json({ ok: true, result });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
   app.use(express.static(path.resolve(process.cwd(), "public")));
   app.get("*", (_req, res) => {
     res.sendFile(path.resolve(process.cwd(), "public", "index.html"));

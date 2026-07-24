@@ -329,7 +329,7 @@ async function saveSettings() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers(), loadSettings()]);
+  await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers(), loadSettings(), loadRawDbViewer()]);
 }
 
 function setupTabs() {
@@ -376,9 +376,26 @@ async function deleteMessagesFromDbForm() {
     });
     const result = response.result || {};
     status.textContent = `Deleted ${result.messagesDeleted || 0} messages, ${result.flagsDeleted || 0} flags, ${result.contextDeleted || 0} context rows.`;
-    await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers()]);
+    await Promise.all([loadStats(), loadMessages(), loadFlags(), loadUsers(), loadRawDbViewer()]);
   } catch (error) {
     status.textContent = `Delete failed: ${error.message}`;
+  }
+}
+
+async function loadRawDbViewer() {
+  const table = qs("rawDbTable").value;
+  const limit = Number(qs("rawDbLimit").value || 100);
+  const meta = qs("rawDbMeta");
+  const output = qs("rawDbOutput");
+
+  meta.textContent = "Loading...";
+  try {
+    const { result } = await api(`/api/db/raw?table=${encodeURIComponent(table)}&limit=${encodeURIComponent(String(limit))}`);
+    meta.textContent = `Table: ${result.table} | Rows: ${result.rowCount} | Columns: ${result.columns.length}`;
+    output.textContent = JSON.stringify(result.rows, null, 2);
+  } catch (error) {
+    meta.textContent = `Raw view failed: ${error.message}`;
+    output.textContent = "";
   }
 }
 
@@ -386,6 +403,7 @@ qs("refreshBtn").addEventListener("click", refreshAll);
 qs("applyFiltersBtn").addEventListener("click", loadMessages);
 qs("saveSettingsBtn").addEventListener("click", saveSettings);
 qs("dbDeleteUserMessagesBtn").addEventListener("click", deleteMessagesFromDbForm);
+qs("rawDbRefreshBtn").addEventListener("click", loadRawDbViewer);
 
 setupTabs();
 

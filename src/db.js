@@ -565,6 +565,33 @@ function createDatabase(dbPath, seedSettings = {}) {
       return tx();
     },
 
+    getRawTableRows({ table, limit = 100 }) {
+      const allowedTables = new Set(["messages", "flags", "users", "recent_context", "settings"]);
+      const safeTable = String(table || "messages").trim();
+
+      if (!allowedTables.has(safeTable)) {
+        throw new Error(`Unsupported table: ${safeTable}`);
+      }
+
+      const safeLimit = Math.min(Math.max(Number(limit || 100), 1), 1000);
+      const tableInfo = db.prepare(`PRAGMA table_info(${safeTable})`).all();
+      const cols = tableInfo.map((col) => col.name);
+
+      const orderBy = cols.includes("id")
+        ? "ORDER BY id DESC"
+        : cols.includes("created_at")
+          ? "ORDER BY created_at DESC"
+          : "";
+
+      const rows = db.prepare(`SELECT * FROM ${safeTable} ${orderBy} LIMIT ?`).all(safeLimit);
+      return {
+        table: safeTable,
+        columns: cols,
+        rowCount: rows.length,
+        rows
+      };
+    },
+
     allowedByCap(action, maxAction) {
       return ACTION_SEVERITY[action] <= ACTION_SEVERITY[maxAction];
     }
