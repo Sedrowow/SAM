@@ -102,6 +102,98 @@ async function fetchChannel(client, channelId) {
   return channel;
 }
 
+function compactText(text, maxLen = 500) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > maxLen ? `${normalized.slice(0, maxLen - 3)}...` : normalized;
+}
+
+function parseFlagRationale(flagRationale) {
+  const text = String(flagRationale || "");
+  const summary = (text.match(/Summary:\s*([\s\S]*?)\nReasoning:/i)?.[1] || "").trim();
+  const reasoning = (text.match(/Reasoning:\s*([\s\S]*)$/i)?.[1] || text).trim();
+  return {
+    summary: compactText(summary, 220),
+    reasoning: compactText(reasoning, 450)
+  };
+}
+
+function fallbackDmText({ action, reason }) {
+  const actionText = {
+    warn: "we sent you a warning",
+    delete: "we removed one of your messages",
+    timeout: "your account was temporarily timed out",
+    kick: "your account was removed from the server",
+    ban: "your account was banned from the server"
+  }[action] || "a moderation action was taken";
+
+  const reasonText = compactText(reason || "A message appears to have broken server rules.", 260);
+  return [
+    "Hi, we wanted to let you know about a moderation action.",
+    `After reviewing your message, ${actionText}.`,
+    `Reason: ${reasonText}`,
+    "If this seems wrong, please contact a server moderator and ask for a review."
+  ].join("\n\n");
+}
+
+async function composeUserModerationDm({ puter, settings, flag, action }) {
+  const details = parseFlagRationale(flag.rationale);
+  const payload = {
+    action,
+    reasonCategory: flag.reason,
+    severity: flag.severity,
+    messageExcerpt: compactText(flag.content || "", 180),
+    summary: details.summary,
+    rationale: details.reasoning
+  };
+
+  const prompt = JSON.stringify(payload, null, 2);
+  const response = await puter.ai.chat(
+    [
+      {
+        role: "system",
+        content: [
+          "Write a direct, personal DM to a user about a moderation action.",
+          "Tone: human, calm, respectful, not robotic.",
+          "Explain clearly what happened and why in plain language.",
+          "Do not mention moderators, admins, or AI systems.",
+          "Do not mention policies in abstract terms; refer to behavior plainly.",
+          "Keep it between 4 and 7 short sentences.",
+          "No markdown, no bullet points, no JSON.",
+          "If reasonCategory is self-harm, use a supportive and compassionate tone, encourage reaching out to trusted people or local emergency services if immediate danger exists, and avoid judgmental wording."
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    {
+      model: settings.puterModel,
+      temperature: Math.min(Math.max(Number(settings.puterTemperature || 0.3), 0.2), 0.8),
+      max_tokens: 280,
+      stream: false
+    }
+  );
+
+  const text = String(
+    response?.message?.content?.[0]?.text ||
+    response?.message?.content ||
+    response?.result?.message?.content ||
+    response?.data?.message?.content ||
+    response ||
+    ""
+  ).trim();
+
+  if (!text) {
+    return fallbackDmText({ action, reason: flag.reason });
+  }
+
+  return compactText(text, 1400);
+}
+
 function createStoatBot({ config, db, puter }) {
   let client;
 
@@ -215,6 +307,19 @@ function createStoatBot({ config, db, puter }) {
     }
 
     const settings = db.getSettings();
+    let dmText = "";
+    try {
+      dmText = await composeUserModerationDm({
+        puter,
+        settings,
+        flag,
+        action
+      });
+    } catch (error) {
+      dmText = fallbackDmText({ action, reason: flag.reason });
+      console.warn("Failed to compose AI moderation DM:", error.message || error);
+    }
+
     const outcome = await executeModerationAction({
       server,
       channel,
@@ -224,12 +329,7 @@ function createStoatBot({ config, db, puter }) {
       reason: `${flag.reason} | ${flag.rationale || "AI flag"}`,
       timeoutMinutes: settings.timeoutMinutes,
       by: moderatorUserId ? `Moderator ${moderatorUserId}` : "AI",
-      notificationContext: {
-        flagId: flag.id,
-        reasonCategory: flag.reason,
-        recommendedAction: flag.recommended_action,
-        rationale: flag.rationale
-      }
+      dmText
     });
 
     db.recordUserAction(flag.guild_id, flag.user_id, action);
@@ -298,15 +398,14 @@ function createStoatBot({ config, db, puter }) {
     }
 
     try {
-      const result = await resolveFlagWithCommand(
+      await resolveFlagWithCommand(
         flag,
         parsed.command,
         message.authorId,
         "Action from Stoat moderation command"
       );
-      await message.reply(`Action applied for flag ${flag.id}: ${result.action}. ${result.details}`);
     } catch (error) {
-      await message.reply(`Failed to apply action for flag ${flag.id}: ${error.message}`);
+      console.error(`Failed to apply action for flag ${flag.id}:`, error.message || error);
     }
 
     return true;
@@ -347,15 +446,14 @@ function createStoatBot({ config, db, puter }) {
     }
 
     try {
-      const result = await resolveFlagWithCommand(
+      await resolveFlagWithCommand(
         flag,
         command,
         userId,
         `Action from reaction control (${emoji})`
       );
-      await message.reply(`Flag ${flag.id} resolved by <@${userId}>: ${result.action}. ${result.details}`);
     } catch (error) {
-      await message.reply(`Flag ${flag.id} could not be resolved: ${error.message}`);
+      console.error(`Flag ${flag.id} could not be resolved:`, error.message || error);
     }
   }
 

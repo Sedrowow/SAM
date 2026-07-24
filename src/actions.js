@@ -3,56 +3,6 @@ function toTimeoutIso(minutes) {
   return new Date(Date.now() + durationMs).toISOString();
 }
 
-function compactText(text, maxLen = 800) {
-  const value = String(text || "").replace(/\s+/g, " ").trim();
-  if (!value) {
-    return "";
-  }
-  return value.length > maxLen ? `${value.slice(0, maxLen - 3)}...` : value;
-}
-
-function cleanReasonForUser(reason, fallback = "A message appears to have broken server rules.") {
-  const raw = String(reason || "").trim();
-  if (!raw) {
-    return fallback;
-  }
-
-  return compactText(
-    raw
-      .replace(/^\s*(ai|moderator\s+[^:]+|dashboard)\s+moderation\s*:\s*/i, "")
-      .replace(/^\s*(ai|moderation)\s*:\s*/i, "")
-      .replace(/\s+/g, " "),
-    340
-  );
-}
-
-function cleanWhyForUser(context) {
-  const raw = String(context?.rationale || "").trim();
-  if (!raw) {
-    return "";
-  }
-
-  const fromReasoning = raw.match(/Reasoning:\s*([\s\S]*)$/i)?.[1] || raw;
-  return compactText(fromReasoning.replace(/\s+/g, " "), 420);
-}
-
-function actionOutcomeText(action, timeoutMinutes) {
-  switch (action) {
-    case "warn":
-      return "we sent you a warning";
-    case "delete":
-      return "we removed one of your messages";
-    case "timeout":
-      return `your account was temporarily timed out for ${timeoutMinutes} minute(s)`;
-    case "kick":
-      return "your account was removed from the server";
-    case "ban":
-      return "your account was banned from the server";
-    default:
-      return "a moderation action was taken";
-  }
-}
-
 async function collectDmTargets({ server, channel, userId }) {
   const targets = [];
 
@@ -127,29 +77,17 @@ async function trySendDmToTarget(target, text) {
   return false;
 }
 
-function buildModerationDm({ action, reason, context, timeoutMinutes }) {
-  const whatHappened = actionOutcomeText(action, timeoutMinutes);
-  const reasonSummary = cleanReasonForUser(reason || context?.reasonCategory);
-  const why = cleanWhyForUser(context);
+async function sendModerationDmText({ server, channel, userId, text }) {
+  const body = String(text || "").trim();
+  if (!body) {
+    return { sent: false, details: "No DM body provided" };
+  }
 
-  const lines = [
-    "Hi, this is a moderation notice.",
-    `We've reviewed your recent activity, and ${whatHappened}.`,
-    `Why: ${reasonSummary}`,
-    why ? `More detail: ${why}` : null,
-    "If you believe this was a mistake, please contact a server moderator so it can be reviewed."
-  ].filter(Boolean);
-
-  return lines.join("\n\n");
-}
-
-async function sendModerationDm({ server, channel, userId, action, reason, context, timeoutMinutes }) {
-  const text = buildModerationDm({ action, reason, context, timeoutMinutes });
   const targets = await collectDmTargets({ server, channel, userId });
 
   for (const target of targets) {
     try {
-      const sent = await trySendDmToTarget(target, text);
+      const sent = await trySendDmToTarget(target, body);
       if (sent) {
         return { sent: true, details: "DM delivered" };
       }
@@ -161,16 +99,6 @@ async function sendModerationDm({ server, channel, userId, action, reason, conte
   return { sent: false, details: "DM delivery unavailable (user DMs may be closed)" };
 }
 
-async function sendWarning(channel, userId, reason) {
-  const text = [
-    `<@${userId}> warning issued by moderation.`,
-    reason ? `Reason: ${reason}` : "Please review the server rules.",
-    "Further violations may lead to stronger actions."
-  ].join("\n");
-
-  await channel.sendMessage(text);
-}
-
 async function executeModerationAction({
   server,
   channel,
@@ -180,7 +108,7 @@ async function executeModerationAction({
   reason,
   timeoutMinutes,
   by = "AI",
-  notificationContext = null
+  dmText = ""
 }) {
   const normalizedReason = `${by} moderation: ${reason || "Rule violation"}`;
 
@@ -189,23 +117,16 @@ async function executeModerationAction({
   }
 
   if (action === "warn") {
-    if (!channel) {
-      throw new Error("Cannot warn without channel context");
-    }
-    await sendWarning(channel, userId, normalizedReason);
-    const dm = await sendModerationDm({
+    const dm = await sendModerationDmText({
       server,
       channel,
       userId,
-      action,
-      reason: normalizedReason,
-      context: notificationContext,
-      timeoutMinutes
+      text: dmText
     });
     return {
       action: "warn",
       success: true,
-      details: `Posted warning mention in channel. ${dm.details}`,
+      details: `Warning recorded. ${dm.details}`,
       dmSent: dm.sent
     };
   }
@@ -221,14 +142,11 @@ async function executeModerationAction({
     }
 
     await targetMessage.delete();
-    const dm = await sendModerationDm({
+    const dm = await sendModerationDmText({
       server,
       channel,
       userId,
-      action,
-      reason: normalizedReason,
-      context: notificationContext,
-      timeoutMinutes
+      text: dmText
     });
     return {
       action: "delete",
@@ -245,14 +163,11 @@ async function executeModerationAction({
     }
 
     await member.edit({ timeout: toTimeoutIso(timeoutMinutes) });
-    const dm = await sendModerationDm({
+    const dm = await sendModerationDmText({
       server,
       channel,
       userId,
-      action,
-      reason: normalizedReason,
-      context: notificationContext,
-      timeoutMinutes
+      text: dmText
     });
     return {
       action: "timeout",
@@ -264,14 +179,11 @@ async function executeModerationAction({
 
   if (action === "kick") {
     await server.kickUser(userId);
-    const dm = await sendModerationDm({
+    const dm = await sendModerationDmText({
       server,
       channel,
       userId,
-      action,
-      reason: normalizedReason,
-      context: notificationContext,
-      timeoutMinutes
+      text: dmText
     });
     return {
       action: "kick",
@@ -283,14 +195,11 @@ async function executeModerationAction({
 
   if (action === "ban") {
     await server.banUser(userId, { reason: normalizedReason });
-    const dm = await sendModerationDm({
+    const dm = await sendModerationDmText({
       server,
       channel,
       userId,
-      action,
-      reason: normalizedReason,
-      context: notificationContext,
-      timeoutMinutes
+      text: dmText
     });
     return {
       action: "ban",
