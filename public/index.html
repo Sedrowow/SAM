@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sentinel Mod Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="background-layer"></div>
+    <header class="topbar">
+      <div>
+        <h1>Sentinel Moderation</h1>
+        <p>AI-assisted and policy-bound Stoat moderation</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshBtn" class="btn btn-ghost">Refresh</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="card stats">
+        <h2>Overview</h2>
+        <div class="stats-grid" id="statsGrid"></div>
+        <div class="chips" id="reasonChips"></div>
+      </section>
+
+      <section class="card filters">
+        <h2>Message Filters</h2>
+        <div class="filter-grid">
+          <label>
+            Flagged
+            <select id="flaggedFilter">
+              <option value="all">All</option>
+              <option value="true">Flagged only</option>
+              <option value="false">Non-flagged only</option>
+            </select>
+          </label>
+          <label>
+            Reason
+            <input id="reasonFilter" placeholder="harassment, self-harm, spam..." />
+          </label>
+          <label>
+            Limit
+            <input id="limitFilter" type="number" min="10" max="1000" value="250" />
+          </label>
+          <button id="applyFiltersBtn" class="btn">Apply</button>
+        </div>
+      </section>
+
+      <section class="card table-card">
+        <h2>Monitored Messages</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Channel</th>
+                <th>Message</th>
+                <th>Flag</th>
+                <th>AI Action</th>
+              </tr>
+            </thead>
+            <tbody id="messagesBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card table-card">
+        <h2>Pending/Recent Flags</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Created</th>
+                <th>User</th>
+                <th>Reason</th>
+                <th>Severity</th>
+                <th>Recommendation</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="flagsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card settings">
+        <h2>Settings</h2>
+        <div class="settings-grid">
+          <label>
+            Stoat bot token
+            <input id="stoatBotToken" type="password" placeholder="Leave empty to keep current" autocomplete="new-password" />
+          </label>
+
+          <label>
+            Moderation channel ID
+            <input id="moderationChannelId" placeholder="Channel ID for flag logs" />
+          </label>
+
+          <label>
+            Puter auth token
+            <input id="puterAuthToken" type="password" placeholder="Leave empty to keep current" autocomplete="new-password" />
+          </label>
+
+          <label>
+            Puter model
+            <input id="puterModel" placeholder="meta-llama/llama-3.1-8b-instruct" />
+          </label>
+
+          <label>
+            Puter temperature
+            <input id="puterTemperature" type="number" min="0" max="2" step="0.01" />
+          </label>
+
+          <label>
+            Recent context messages
+            <input id="recentContextMessages" type="number" min="1" max="100" />
+          </label>
+
+          <label class="switch-wrap">
+            <span>Auto moderation</span>
+            <input id="autoModeration" type="checkbox" />
+          </label>
+
+          <label>
+            Max auto action
+            <select id="maxAutoAction">
+              <option value="warn">warn</option>
+              <option value="delete">delete</option>
+              <option value="timeout">timeout</option>
+              <option value="kick">kick</option>
+              <option value="ban">ban</option>
+            </select>
+          </label>
+
+          <label>
+            Timeout duration (minutes)
+            <input id="timeoutMinutes" type="number" min="1" max="10080" />
+          </label>
+
+          <fieldset>
+            <legend>Allowed actions</legend>
+            <label><input class="allowedAction" type="checkbox" value="warn" /> warn</label>
+            <label><input class="allowedAction" type="checkbox" value="delete" /> delete</label>
+            <label><input class="allowedAction" type="checkbox" value="timeout" /> timeout</label>
+            <label><input class="allowedAction" type="checkbox" value="kick" /> kick</label>
+            <label><input class="allowedAction" type="checkbox" value="ban" /> ban</label>
+          </fieldset>
+
+          <label>
+            Excluded channel IDs (comma-separated)
+            <input id="excludedChannels" placeholder="123,456,789" />
+          </label>
+
+          <label>
+            Rules (one per line)
+            <textarea id="rulesBox" rows="8"></textarea>
+          </label>
+
+          <label>
+            Dashboard host
+            <input id="dashboardHost" placeholder="127.0.0.1" />
+          </label>
+
+          <label>
+            Dashboard port
+            <input id="dashboardPort" type="number" min="1" max="65535" />
+          </label>
+
+          <label>
+            Dashboard username
+            <input id="dashboardUsername" />
+          </label>
+
+          <label>
+            Dashboard password
+            <input id="dashboardPassword" type="password" placeholder="Leave empty to keep current" autocomplete="new-password" />
+          </label>
+        </div>
+
+        <div class="settings-actions">
+          <button id="saveSettingsBtn" class="btn">Save Settings</button>
+          <span id="saveStatus"></span>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

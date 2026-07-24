@@ -1,0 +1,30 @@
+{
+  "name": "stoat-puter-auto-moderator",
+  "version": "1.0.0",
+  "description": "Stoat moderation bot with Puter.js AI decisions, SQLite memory, and web dashboard",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": [
+    "stoat",
+    "moderation",
+    "puter",
+    "sqlite",
+    "dashboard"
+  ],
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@heyputer/puter.js": "^2.5.0",
+    "basic-auth": "^2.0.1",
+    "better-sqlite3": "^11.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "stoat.js": "^7.3.6"
+  }
+}
