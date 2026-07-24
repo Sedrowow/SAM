@@ -213,12 +213,14 @@ async function loadMessages() {
   for (const row of messages) {
     const tr = document.createElement("tr");
     const messageText = row.content || (Number(row.imageAttachmentCount || 0) ? "[image attachment]" : "");
+    const imageDescription = row.aiImageDescription || (Number(row.imageAttachmentCount || 0) ? "No image description available." : "-");
     tr.innerHTML = `
       <td>${humanDate(row.createdAt)}</td>
       <td><code>${escapeHtml(row.displayName || row.username)}</code><br/><code>${escapeHtml(row.userId)}</code></td>
       <td><code>${escapeHtml(row.guildName || row.guildId || "unknown")}</code><br/><code>${escapeHtml(row.channelName || row.channelId)}</code></td>
       <td class="message-cell">${escapeHtml(messageText)}</td>
       <td>${mediaPreviewCell(row)}</td>
+      <td class="ai-cell">${escapeHtml(imageDescription)}</td>
       <td>${row.flagged ? severityBadge(row.flagReason, true) : "-"}</td>
       <td>${severityBadge(row.aiRecommendedAction || "none", false)}</td>
       <td class="ai-cell">${escapeHtml(row.aiSummary || "-")}</td>

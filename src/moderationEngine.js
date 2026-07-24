@@ -327,6 +327,66 @@ function buildMultimodalUserMessage({ messageText, imageAttachments, aiProvider 
   };
 }
 
+async function generateImageDescription({ puter, model, temperature, imageAttachments, aiProvider }) {
+  const attachments = Array.isArray(imageAttachments) ? imageAttachments : [];
+  if (!attachments.length) {
+    return "";
+  }
+
+  const message = buildMultimodalUserMessage({
+    messageText: [
+      "Describe only what is visibly present in the attached image(s).",
+      "Return JSON only in this schema: {\"imageDescription\": string}.",
+      "Keep it short, concrete, and factual.",
+      "Do not mention policy, safety, moderation, or hidden reasoning."
+    ].join("\n"),
+    imageAttachments: attachments,
+    aiProvider
+  });
+
+  const response = await puter.ai.chat(
+    [
+      {
+        role: "system",
+        content: "Return only JSON and describe the visible image content factually."
+      },
+      message
+    ],
+    {
+      model,
+      temperature: Math.min(Math.max(Number(temperature ?? 0.1), 0.1), 0.3),
+      max_tokens: 120,
+      stream: false,
+      ...(aiProvider !== "ollama" ? { response_format: { type: "json_object" } } : {})
+    }
+  );
+
+  const rawText =
+    response?.message?.content?.[0]?.text ||
+    response?.message?.content ||
+    response?.result?.message?.content ||
+    response?.data?.message?.content ||
+    response?.result ||
+    response;
+
+  let parsed;
+  try {
+    parsed = parseModelJson(rawText);
+  } catch {
+    parsed = null;
+  }
+
+  const description = String(
+    parsed?.imageDescription ||
+    parsed?.description ||
+    parsed?.summary ||
+    extractFinalAnswerText(rawText) ||
+    ""
+  ).trim();
+
+  return cleanDisplayText(description, 220);
+}
+
 function parseModelJson(rawText) {
   if (!rawText) {
     throw new Error("Empty AI response");
@@ -731,6 +791,26 @@ async function moderateMessage({
       summary: summarizeWithContext(message, recentMessages, imageAttachments.length),
       rationale: `AI unavailable. Using deterministic safety fallback. (${error.message})`
     };
+  }
+
+  if (imageAttachments.length && !normalized.imageDescription) {
+    try {
+      const imageDescription = await generateImageDescription({
+        puter,
+        model,
+        temperature,
+        imageAttachments,
+        aiProvider: settings.aiProvider
+      });
+      if (imageDescription) {
+        normalized = {
+          ...normalized,
+          imageDescription
+        };
+      }
+    } catch {
+      // Keep moderation running even if the vision-only description step fails.
+    }
   }
 
   const withHeuristics = applySafetyHeuristics({

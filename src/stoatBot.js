@@ -35,6 +35,7 @@ function createFlagLogText({ flagId, message, decision, userStats, autoApplied, 
     `Suggested action: ${decision.recommendedAction}`,
     `Suggested escalation: ${escalationFor(decision.recommendedAction)}`,
     message.imageAttachmentCount ? `Attached images reviewed: ${message.imageAttachmentCount}` : null,
+    message.aiImageDescription ? `AI image description: ${message.aiImageDescription}` : null,
     `Prior violations: warn=${userStats.warns}, timeout=${userStats.timeouts}, kick=${userStats.kicks}, ban=${userStats.bans}`,
     "",
     "Summary:",
@@ -1069,7 +1070,10 @@ function createStoatBot({ config, db, puter }) {
         const posted = await moderationChannel.sendMessage(
           createFlagLogText({
             flagId,
-            message: messagePayload,
+            message: {
+              ...messagePayload,
+              aiImageDescription: decision.imageDescription
+            },
             decision,
             userStats,
             autoApplied,
