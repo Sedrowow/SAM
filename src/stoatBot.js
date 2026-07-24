@@ -214,16 +214,45 @@ function looksLikeJsonEnvelope(text) {
 function cleanDmText(text) {
   const raw = String(text || "");
 
+  const extractBestDraftBody = (input) => {
+    const value = String(input || "");
+    const draftLabel = /draft\s*\d+[^:]*:/gi;
+    const matches = [...value.matchAll(draftLabel)];
+    if (!matches.length) {
+      return value;
+    }
+
+    const segments = [];
+    for (let i = 0; i < matches.length; i += 1) {
+      const start = (matches[i].index || 0) + matches[i][0].length;
+      const end = i + 1 < matches.length ? (matches[i + 1].index || value.length) : value.length;
+      segments.push(value.slice(start, end).trim());
+    }
+
+    const ranked = segments
+      .map((segment) => ({
+        segment,
+        score: (segment.match(/[.!?](?:\s|$)/g) || []).length * 100 + segment.length
+      }))
+      .filter((item) => item.segment)
+      .sort((a, b) => b.score - a.score);
+
+    return ranked[0]?.segment || value;
+  };
+
+  const withBestDraft = extractBestDraftBody(raw);
+
   const cutMarkers = [
     /\bcheck\s+against\s+constraints\b/i,
     /\brefining\s+for\b/i,
+    /\bdraft\s*\d+\b/i,
     /\bdirect\/personal\?/i,
     /\bhuman\/calm\/respectful\?/i,
     /\bjson\s+format\?/i,
     /\bconstraints\s*:\s*\*/i
   ];
 
-  let cropped = raw;
+  let cropped = withBestDraft;
   for (const marker of cutMarkers) {
     const match = cropped.match(marker);
     if (match?.index > 0) {
